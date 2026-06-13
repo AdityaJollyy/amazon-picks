@@ -1,0 +1,127 @@
+// Prisma 7 schema
+// - uses the new "prisma-client" provider (Rust-free) with a required output path
+// - the datasource block has NO url (that lives in prisma.config.ts now)
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum OrderStatus {
+  PLACED
+  PACKED
+  OUT_FOR_DELIVERY
+  DELIVERED
+  CANCELLED
+}
+
+// A delivery zone served by a local dark store. Quick-commerce is zone-based:
+// availability, stock and ETA all depend on which zone the customer is in.
+model Zone {
+  id        String   @id @default(cuid())
+  name      String
+  code      String   @unique
+  city      String
+  pincode   String
+  createdAt DateTime @default(now())
+
+  stocks ZoneStock[]
+  users  User[]
+  orders Order[]
+}
+
+model Category {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  icon      String?
+  createdAt DateTime @default(now())
+
+  products Product[]
+}
+
+model Product {
+  id          String   @id @default(cuid())
+  name        String
+  description String
+  brand       String
+  price       Int // selling price in whole rupees
+  mrp         Int // original price in whole rupees
+  unit        String // e.g. "500 g", "1 L", "pack of 6"
+  imageUrl    String
+  rating      Float    @default(4.0)
+  reviewCount Int      @default(0)
+  popularity  Int      @default(0) // used later for ranking
+  tags        String[] @default([])
+  vibes       String[] @default([]) // medical | party | emergency | casual — drives the vibe-reactive UI
+  categoryId  String
+  createdAt   DateTime @default(now())
+
+  category   Category    @relation(fields: [categoryId], references: [id])
+  stocks     ZoneStock[]
+  orderItems OrderItem[]
+
+  @@index([categoryId])
+}
+
+// Per-zone availability for a product (stock + delivery ETA).
+model ZoneStock {
+  id         String @id @default(cuid())
+  productId  String
+  zoneId     String
+  stock      Int    @default(0)
+  etaMinutes Int    @default(12)
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  zone    Zone    @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, zoneId])
+  @@index([zoneId])
+}
+
+model User {
+  id            String   @id @default(cuid())
+  name          String
+  email         String   @unique
+  phone         String?
+  defaultZoneId String?
+  createdAt     DateTime @default(now())
+
+  defaultZone Zone?   @relation(fields: [defaultZoneId], references: [id])
+  orders      Order[]
+}
+
+model Order {
+  id        String      @id @default(cuid())
+  userId    String
+  zoneId    String
+  status    OrderStatus @default(PLACED)
+  total     Int // in whole rupees
+  createdAt DateTime    @default(now())
+
+  user  User        @relation(fields: [userId], references: [id])
+  zone  Zone        @relation(fields: [zoneId], references: [id])
+  items OrderItem[]
+
+  @@index([userId])
+}
+
+// Snapshot of a product at purchase time (name + price frozen) so order
+// history stays correct even if the catalog changes later.
+model OrderItem {
+  id        String @id @default(cuid())
+  orderId   String
+  productId String
+  name      String
+  price     Int
+  quantity  Int
+
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
+
+  @@index([orderId])
+}

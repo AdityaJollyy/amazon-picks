@@ -1,0 +1,32 @@
+{
+  "name": "quick-commerce-backend",
+  "version": "1.0.0",
+  "description": "Backend for the Amazon HackOn 6.0 quick-commerce prototype",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "prisma generate && tsc",
+    "start": "node dist/src/server.js",
+    "prisma:generate": "prisma generate",
+    "migrate": "prisma migrate dev",
+    "seed": "tsx prisma/seed.ts",
+    "studio": "prisma studio"
+  },
+  "dependencies": {
+    "@prisma/adapter-pg": "^7.2.0",
+    "@prisma/client": "^7.2.0",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.0",
+    "express": "^5.1.0",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.0",
+    "@types/pg": "^8.11.10",
+    "prisma": "^7.2.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.0"
+  }
+}
