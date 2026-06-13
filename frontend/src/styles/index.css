@@ -1,0 +1,64 @@
+@import "tailwindcss";
+
+/* Vibe-reactive theme tokens. The active vibe is set on <html data-vibe="...">,
+   and the AI surfaces read these CSS variables. The base storefront uses
+   the Amazon-like palette below (data-vibe="casual" or unset). */
+@theme {
+  --color-amazon-navy: #131921;
+  --color-amazon-navy-light: #232f3e;
+  --color-amazon-yellow: #febd69;
+  --color-amazon-yellow-hover: #f3a847;
+  --color-amazon-orange: #ff9900;
+  --color-amazon-link: #007185;
+  --color-amazon-price: #b12704;
+
+  --color-vibe-bg: #ffffff;
+  --color-vibe-fg: #0f172a;
+  --color-vibe-accent: #ff9900;
+  --color-vibe-muted: #64748b;
+
+  --font-sans: "Inter", "Amazon Ember", ui-sans-serif, system-ui, sans-serif;
+}
+
+:root {
+  color-scheme: light;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: #eaeded;
+  color: #0f172a;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Vibe palettes — the AI returns one of these and we swap data-vibe on <html>. */
+html[data-vibe="medical"] {
+  --color-vibe-bg: #f0f9ff;
+  --color-vibe-fg: #0c4a6e;
+  --color-vibe-accent: #0ea5e9;
+  --color-vibe-muted: #475569;
+}
+html[data-vibe="party"] {
+  --color-vibe-bg: #1a0b2e;
+  --color-vibe-fg: #fef3c7;
+  --color-vibe-accent: #ec4899;
+  --color-vibe-muted: #c4b5fd;
+}
+html[data-vibe="emergency"] {
+  --color-vibe-bg: #fef2f2;
+  --color-vibe-fg: #7f1d1d;
+  --color-vibe-accent: #dc2626;
+  --color-vibe-muted: #991b1b;
+}
+html[data-vibe="casual"] {
+  --color-vibe-bg: #ffffff;
+  --color-vibe-fg: #0f172a;
+  --color-vibe-accent: #ff9900;
+  --color-vibe-muted: #64748b;
+}
