@@ -49,16 +49,25 @@ function IntentField({
 }) {
   return (
     <label className="block">
-      <span className="mb-1.5 block text-xs font-medium uppercase tracking-[0.16em] text-fuchsia-300/80">
+      <span
+        className="mb-1.5 block text-xs font-medium uppercase tracking-[0.16em]"
+        style={{ color: "var(--color-vibe-accent-2)" }}
+      >
         What&rsquo;s the occasion?
       </span>
-      <div className="relative rounded-xl border border-white/10 bg-white/[0.04] backdrop-blur transition focus-within:border-fuchsia-400/50 focus-within:bg-white/[0.06]">
+      <div
+        className="relative rounded-xl border border-white/10 bg-white/[0.04] backdrop-blur transition focus-within:bg-white/[0.06]"
+        style={{
+          // Border lights up to the vibe accent on focus via inner shadow.
+          boxShadow: "inset 0 0 0 0 transparent",
+        }}
+      >
         <input
           type="text"
           value={value}
           onChange={(e) => onChange(e.target.value)}
           placeholder="e.g. camping trip, hosting 8 tonight, kid's fever"
-          className="w-full bg-transparent px-4 py-3 text-[15px] text-white placeholder-slate-500 focus:outline-none"
+          className="w-full bg-transparent px-4 py-3 text-[15px] text-white placeholder-slate-500 focus:outline-none focus:[box-shadow:inset_0_0_0_1px_var(--color-vibe-accent)]"
         />
       </div>
     </label>
@@ -74,7 +83,7 @@ function GroupSizeStepper({
 }) {
   return (
     <div className="rounded-xl border border-white/10 bg-white/[0.04] p-3 backdrop-blur">
-      <div className="text-xs font-medium uppercase tracking-[0.16em] text-cyan-300/80">
+      <div className="text-xs font-medium uppercase tracking-[0.16em]" style={{ color: "var(--color-vibe-accent-2)" }}>
         Group size
       </div>
       <div className="mt-2 flex items-center justify-between">
@@ -123,7 +132,7 @@ function BudgetSlider({
   return (
     <div className="rounded-xl border border-white/10 bg-white/[0.04] p-3 backdrop-blur">
       <div className="flex items-baseline justify-between">
-        <span className="text-xs font-medium uppercase tracking-[0.16em] text-amber-300/80">
+        <span className="text-xs font-medium uppercase tracking-[0.16em]" style={{ color: "var(--color-vibe-accent-2)" }}>
           Budget
         </span>
         <span className="text-xs text-slate-400">{active.hint}</span>
@@ -135,7 +144,11 @@ function BudgetSlider({
         {/* Track + filled portion */}
         <div className="relative h-1.5 rounded-full bg-white/10">
           <motion.div
-            className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-fuchsia-400 via-amber-300 to-cyan-400"
+            className="absolute inset-y-0 left-0 rounded-full"
+            style={{
+              backgroundImage:
+                "linear-gradient(90deg, var(--color-vibe-accent), var(--color-vibe-accent-2))",
+            }}
             initial={false}
             animate={{ width: `${(value / 2) * 100}%` }}
             transition={{ type: "spring", damping: 26, stiffness: 280 }}
@@ -159,8 +172,17 @@ function BudgetSlider({
                   className={
                     "block h-3 w-3 rounded-full ring-2 transition " +
                     (isActive
-                      ? "bg-white ring-fuchsia-400 shadow-[0_0_12px_rgba(244,114,182,0.6)]"
+                      ? "bg-white"
                       : "bg-slate-600 ring-white/20 group-hover:bg-slate-400")
+                  }
+                  style={
+                    isActive
+                      ? {
+                          // @ts-expect-error -- valid CSS, TS just doesn't know about ring color via var
+                          "--tw-ring-color": "var(--color-vibe-accent)",
+                          boxShadow: "0 0 12px var(--color-vibe-glow)",
+                        }
+                      : undefined
                   }
                 />
               </button>
@@ -263,7 +285,11 @@ function CartOptionCard({ option, delay }: { option: CartOption; delay: number }
     >
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute -inset-px rounded-2xl bg-gradient-to-br from-fuchsia-500/0 via-cyan-400/0 to-amber-400/0 opacity-0 transition group-hover:from-fuchsia-500/10 group-hover:via-cyan-400/10 group-hover:to-amber-400/10 group-hover:opacity-100"
+        className="pointer-events-none absolute -inset-px rounded-2xl opacity-0 transition group-hover:opacity-100"
+        style={{
+          backgroundImage:
+            "linear-gradient(135deg, var(--color-vibe-accent-soft), transparent 60%)",
+        }}
       />
 
       <div className="relative flex items-start justify-between gap-3">
@@ -316,9 +342,16 @@ function CartOptionCard({ option, delay }: { option: CartOption; delay: number }
           disabled={added}
           className={
             "rounded-full px-4 py-1.5 text-sm font-semibold transition " +
-            (added
-              ? "bg-emerald-400 text-slate-900"
-              : "bg-gradient-to-r from-fuchsia-500 to-cyan-500 text-white shadow-[0_6px_24px_-6px_rgba(168,85,247,0.6)] hover:brightness-110")
+            (added ? "bg-emerald-400 text-slate-900" : "text-white hover:brightness-110")
+          }
+          style={
+            added
+              ? undefined
+              : {
+                  backgroundImage:
+                    "linear-gradient(90deg, var(--color-vibe-accent), var(--color-vibe-accent-2))",
+                  boxShadow: "0 6px 24px -6px var(--color-vibe-glow)",
+                }
           }
         >
           {added ? "Added ✓" : "Add to cart"}

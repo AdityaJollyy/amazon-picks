@@ -3,6 +3,7 @@ import { Header } from "@/components/layout/Header";
 import { CategoryNav } from "@/components/layout/CategoryNav";
 import { CartDrawer } from "@/features/cart/CartDrawer";
 import { AiPanel } from "@/features/ai/AiPanel";
+import { VibeSwitcher } from "@/features/vibe/VibeSwitcher";
 
 export function RootLayout() {
   return (
@@ -17,6 +18,7 @@ export function RootLayout() {
       </footer>
       <CartDrawer />
       <AiPanel />
+      <VibeSwitcher />
     </div>
   );
 }

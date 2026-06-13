@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import { CloseIcon, SparkleIcon } from "@/components/ui/Icons";
 import { useAiPanel } from "./useAiPanel";
 import { QuickMode } from "./QuickMode";
+import { Conversation } from "./Conversation";
 import type { AiTab } from "./types";
 
 const TABS: { id: AiTab; label: string; hint: string }[] = [
@@ -51,12 +52,17 @@ export function AiPanel() {
             animate={{ x: 0, opacity: 1 }}
             exit={{ x: "100%", opacity: 0.4 }}
             transition={{ type: "spring", damping: 30, stiffness: 260 }}
-            className="fixed inset-y-0 right-0 z-50 flex w-full max-w-[640px] flex-col overflow-hidden border-l border-white/10 bg-slate-950 text-slate-100 shadow-2xl"
+            className="vibe-react fixed inset-y-0 right-0 z-50 flex w-full max-w-[760px] flex-col overflow-hidden border-l border-white/10 text-slate-100 shadow-2xl"
+            style={{ backgroundColor: "var(--color-vibe-panel)" }}
           >
-            {/* Atmospheric gradient backdrop */}
+            {/* Atmospheric gradient backdrop — driven by current vibe accents */}
             <div
               aria-hidden="true"
-              className="pointer-events-none absolute inset-0 bg-[radial-gradient(120%_60%_at_50%_-10%,rgba(168,85,247,0.35),transparent_60%),radial-gradient(80%_50%_at_100%_100%,rgba(34,211,238,0.18),transparent_60%)]"
+              className="pointer-events-none absolute inset-0"
+              style={{
+                backgroundImage:
+                  "radial-gradient(120% 60% at 50% -10%, var(--color-vibe-accent-soft), transparent 60%), radial-gradient(80% 50% at 100% 100%, var(--color-vibe-accent-soft), transparent 60%)",
+              }}
             />
             <div
               aria-hidden="true"
@@ -66,7 +72,10 @@ export function AiPanel() {
             {/* Header */}
             <header className="relative flex items-start justify-between gap-3 border-b border-white/10 px-6 pt-5 pb-4">
               <div>
-                <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.18em] text-fuchsia-300/90">
+                <div
+                  className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.18em]"
+                  style={{ color: "var(--color-vibe-accent-2)" }}
+                >
                   <SparkleIcon className="h-3.5 w-3.5" />
                   <span>Zip Intelligence</span>
                 </div>
@@ -109,7 +118,12 @@ export function AiPanel() {
                       {active && (
                         <motion.span
                           layoutId="ai-tab-pill"
-                          className="absolute inset-0 rounded-full bg-gradient-to-r from-fuchsia-500/80 to-cyan-500/80 shadow-[0_0_20px_rgba(168,85,247,0.45)]"
+                          className="absolute inset-0 rounded-full"
+                          style={{
+                            backgroundImage:
+                              "linear-gradient(90deg, var(--color-vibe-accent), var(--color-vibe-accent-2))",
+                            boxShadow: "0 0 20px var(--color-vibe-glow)",
+                          }}
                           transition={{ type: "spring", damping: 26, stiffness: 320 }}
                         />
                       )}
@@ -138,7 +152,7 @@ export function AiPanel() {
                   exit={{ opacity: 0, y: -6 }}
                   transition={{ duration: 0.18, ease: "easeOut" }}
                 >
-                  {tab === "quick" ? <QuickMode /> : <ConversationPlaceholder />}
+                  {tab === "quick" ? <QuickMode /> : <Conversation />}
                 </motion.div>
               </AnimatePresence>
             </div>
@@ -146,30 +160,5 @@ export function AiPanel() {
         </>
       )}
     </AnimatePresence>
-  );
-}
-
-function PanelCard({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-6 backdrop-blur-xl">
-      {children}
-    </div>
-  );
-}
-
-function ConversationPlaceholder() {
-  return (
-    <PanelCard>
-      <div className="text-xs font-medium uppercase tracking-[0.16em] text-cyan-300/80">
-        Conversation
-      </div>
-      <h3 className="mt-1 text-lg font-semibold text-white">
-        Chat it through, watch the cart build
-      </h3>
-      <p className="mt-2 text-sm text-slate-400">
-        I&rsquo;ll ask a couple of clarifying questions and assemble a draft cart
-        beside the chat. Hooked up next.
-      </p>
-    </PanelCard>
   );
 }
