@@ -1,4 +1,5 @@
 import { motion } from "framer-motion";
+import { Link } from "react-router-dom";
 import type { DisplayProduct } from "@/types/product";
 import { cn } from "@/lib/cn";
 
@@ -47,7 +48,11 @@ export function ProductCard({ product, onAdd, className }: ProductCardProps) {
       )}
     >
       {/* Image with ETA badge */}
-      <div className="relative mb-3 aspect-square overflow-hidden rounded-sm bg-slate-50">
+      <Link
+        to={`/product/${product.id}`}
+        aria-label={product.name}
+        className="relative mb-3 block aspect-square overflow-hidden rounded-sm bg-slate-50"
+      >
         <img
           src={product.imageUrl}
           alt={product.name}
@@ -62,7 +67,7 @@ export function ProductCard({ product, onAdd, className }: ProductCardProps) {
             -{discountPct}%
           </span>
         )}
-      </div>
+      </Link>
 
       {/* Brand */}
       <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
@@ -70,9 +75,12 @@ export function ProductCard({ product, onAdd, className }: ProductCardProps) {
       </div>
 
       {/* Title — clamp to 2 lines */}
-      <h3 className="mt-0.5 line-clamp-2 min-h-[2.5rem] text-sm leading-tight text-slate-800 hover:text-[var(--color-amazon-link)]">
+      <Link
+        to={`/product/${product.id}`}
+        className="mt-0.5 line-clamp-2 min-h-[2.5rem] text-sm leading-tight text-slate-800 hover:text-[var(--color-amazon-link)]"
+      >
         {product.name}
-      </h3>
+      </Link>
 
       {/* Unit */}
       <div className="mt-0.5 text-xs text-slate-500">{product.unit}</div>

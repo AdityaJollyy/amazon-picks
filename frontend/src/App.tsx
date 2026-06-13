@@ -1,6 +1,14 @@
 import { RouterProvider } from "react-router-dom";
 import { router } from "@/router";
+import { CartProvider } from "@/features/cart/CartProvider";
+import { AiPanelProvider } from "@/features/ai/AiPanelProvider";
 
 export default function App() {
-  return <RouterProvider router={router} />;
+  return (
+    <CartProvider>
+      <AiPanelProvider>
+        <RouterProvider router={router} />
+      </AiPanelProvider>
+    </CartProvider>
+  );
 }

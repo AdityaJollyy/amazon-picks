@@ -259,3 +259,30 @@ export const DUMMY_CATEGORY_GROUPS: CategoryGroup[] = Object.values(CATEGORIES).
     products: DUMMY_PRODUCTS.filter((p) => p.categoryId === cat.id),
   })
 );
+
+export function getProductById(id: string): DisplayProduct | undefined {
+  return DUMMY_PRODUCTS.find((p) => p.id === id);
+}
+
+export function getCategoryGroupBySlug(slug: string): CategoryGroup | undefined {
+  return DUMMY_CATEGORY_GROUPS.find((c) => c.slug === slug);
+}
+
+/** Other products in the same category, excluding the given product. */
+export function getRelatedProducts(product: DisplayProduct, limit = 6): DisplayProduct[] {
+  return DUMMY_PRODUCTS.filter(
+    (p) => p.categoryId === product.categoryId && p.id !== product.id
+  ).slice(0, limit);
+}
+
+/** Naive case-insensitive search over name, brand, and tags. */
+export function searchProducts(query: string): DisplayProduct[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  return DUMMY_PRODUCTS.filter(
+    (p) =>
+      p.name.toLowerCase().includes(q) ||
+      p.brand.toLowerCase().includes(q) ||
+      p.tags.some((t) => t.toLowerCase().includes(q))
+  );
+}

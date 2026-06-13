@@ -1,11 +1,23 @@
 import { ProductRow } from "@/features/products/ProductGrid";
 import { DUMMY_CATEGORY_GROUPS } from "@/features/products/dummyProducts";
+import { useCart } from "@/features/cart/useCart";
 import type { DisplayProduct } from "@/types/product";
 
 export function Home() {
+  const { add, openDrawer } = useCart();
+
   const handleAdd = (product: DisplayProduct) => {
-    // Wired up later — add to cart store. For now, a console hook.
-    console.log("add to cart", product.id);
+    add({
+      productId: product.id,
+      name: product.name,
+      brand: product.brand,
+      unit: product.unit,
+      imageUrl: product.imageUrl,
+      price: product.price,
+      mrp: product.mrp,
+      etaMinutes: product.etaMinutes,
+    });
+    openDrawer();
   };
 
   return (

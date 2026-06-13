@@ -1,20 +1,18 @@
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
+import { useState } from "react";
 import { CartIcon, ChevronDownIcon, PinIcon, SearchIcon } from "@/components/ui/Icons";
+import { useCart } from "@/features/cart/useCart";
+import { AskAiButton } from "@/features/ai/AskAiButton";
 
 const SEARCH_CATEGORIES = [
-  "All",
-  "Groceries",
-  "Fresh",
-  "Pharmacy",
-  "Electronics",
-  "Home",
-  "Beauty",
-  "Baby",
+  { label: "All", slug: "all" },
+  { label: "Fresh", slug: "fresh" },
+  { label: "Snacks", slug: "snacks" },
+  { label: "Pharmacy", slug: "pharmacy" },
+  { label: "Beverages", slug: "beverages" },
 ];
 
 type HeaderProps = {
-  /** Dummy: number shown in the cart badge. */
-  cartCount?: number;
   /** Dummy: location label shown in the pill. */
   zoneLabel?: string;
   /** Dummy: short user greeting. */
@@ -22,10 +20,21 @@ type HeaderProps = {
 };
 
 export function Header({
-  cartCount = 0,
   zoneLabel = "Saket 110017",
   userName = "Aarav",
 }: HeaderProps) {
+  const { count: cartCount, openDrawer } = useCart();
+  const navigate = useNavigate();
+  const [query, setQuery] = useState("");
+  const [scope, setScope] = useState("all");
+
+  const handleSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    const q = query.trim();
+    const params = q ? `?q=${encodeURIComponent(q)}` : "";
+    navigate(`/category/${scope}${params}`);
+  };
+
   return (
     <header className="bg-[var(--color-amazon-navy)] text-white">
       <div className="mx-auto flex max-w-[1500px] items-center gap-2 px-2 py-1.5 sm:gap-3 sm:px-4">
@@ -61,18 +70,19 @@ export function Header({
         {/* Search bar */}
         <form
           role="search"
-          onSubmit={(e) => e.preventDefault()}
+          onSubmit={handleSearch}
           className="flex h-10 min-w-0 flex-1 overflow-hidden rounded-md focus-within:ring-2 focus-within:ring-[var(--color-amazon-yellow)]"
         >
           <label className="hidden shrink-0 items-center gap-1 border-r border-slate-300 bg-slate-200 px-2 text-xs text-slate-900 hover:bg-slate-300 sm:flex">
             <select
-              defaultValue="All"
+              value={scope}
+              onChange={(e) => setScope(e.target.value)}
               aria-label="Search category"
               className="appearance-none bg-transparent py-1 pr-4 text-xs text-slate-900 focus:outline-none"
             >
               {SEARCH_CATEGORIES.map((c) => (
-                <option key={c} value={c}>
-                  {c}
+                <option key={c.slug} value={c.slug}>
+                  {c.label}
                 </option>
               ))}
             </select>
@@ -80,6 +90,8 @@ export function Header({
           </label>
           <input
             type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
             placeholder="Search Zip"
             aria-label="Search Zip"
             className="min-w-0 flex-1 bg-white px-3 text-sm text-slate-900 placeholder-slate-500 focus:outline-none"
@@ -92,6 +104,9 @@ export function Header({
             <SearchIcon className="h-5 w-5" />
           </button>
         </form>
+
+        {/* Ask AI */}
+        <AskAiButton />
 
         {/* Account */}
         <button
@@ -106,8 +121,9 @@ export function Header({
         </button>
 
         {/* Cart */}
-        <Link
-          to="/cart"
+        <button
+          type="button"
+          onClick={openDrawer}
           aria-label={`Cart, ${cartCount} item${cartCount === 1 ? "" : "s"}`}
           className="relative flex shrink-0 items-end rounded-sm border border-transparent px-2 py-2 hover:border-white"
         >
@@ -121,7 +137,7 @@ export function Header({
             </span>
           </div>
           <span className="ml-1 hidden text-sm font-bold sm:inline">Cart</span>
-        </Link>
+        </button>
       </div>
     </header>
   );
