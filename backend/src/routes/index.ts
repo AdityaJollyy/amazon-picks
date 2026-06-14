@@ -4,6 +4,7 @@ import productsRoutes from "../modules/products/products.routes.js";
 import categoriesRoutes from "../modules/categories/categories.routes.js";
 import zonesRoutes from "../modules/zones/zones.routes.js";
 import aiRoutes from "../modules/ai/ai.routes.js";
+import ordersRoutes from "../modules/orders/orders.routes.js";
 
 const router = Router();
 
@@ -13,5 +14,6 @@ router.use("/products", productsRoutes);
 router.use("/categories", categoriesRoutes);
 router.use("/zones", zonesRoutes);
 router.use("/ai", aiRoutes);
+router.use("/orders", ordersRoutes);
 
 export default router;

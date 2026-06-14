@@ -1,6 +1,9 @@
 import { AnimatePresence, motion } from "framer-motion";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useCart } from "./useCart";
+import { useZone } from "@/features/zone/useZone";
+import { ApiError } from "@/lib/ApiError";
+import { ordersApi, type Order } from "@/api/orders.api";
 import { CloseIcon, MinusIcon, PlusIcon, TrashIcon } from "@/components/ui/Icons";
 import type { CartItem } from "./types";
 
@@ -87,7 +90,21 @@ function CartLine({ item }: { item: CartItem }) {
 }
 
 export function CartDrawer() {
-  const { items, count, subtotal, totalSavings, isDrawerOpen, closeDrawer } = useCart();
+  const { items, count, subtotal, totalSavings, isDrawerOpen, closeDrawer, clear } = useCart();
+  const { zone } = useZone();
+
+  type Phase =
+    | { kind: "cart" }
+    | { kind: "placing" }
+    | { kind: "error"; message: string }
+    | { kind: "success"; order: Order };
+
+  const [phase, setPhase] = useState<Phase>({ kind: "cart" });
+
+  // Reset to the cart view whenever the drawer is reopened.
+  useEffect(() => {
+    if (isDrawerOpen) setPhase({ kind: "cart" });
+  }, [isDrawerOpen]);
 
   // Close on Escape and lock body scroll while open.
   useEffect(() => {
@@ -107,6 +124,23 @@ export function CartDrawer() {
     };
   }, [isDrawerOpen, closeDrawer]);
 
+  const handleCheckout = async () => {
+    if (!items.length || !zone) return;
+    setPhase({ kind: "placing" });
+    try {
+      const order = await ordersApi.create({
+        zoneCode: zone.code,
+        items: items.map((it) => ({ productId: it.productId, quantity: it.qty })),
+      });
+      // Cart cleared AFTER the request succeeds — failed orders don't lose state.
+      clear();
+      setPhase({ kind: "success", order });
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : "Checkout failed";
+      setPhase({ kind: "error", message });
+    }
+  };
+
   return (
     <AnimatePresence>
       {isDrawerOpen && (
@@ -118,7 +152,7 @@ export function CartDrawer() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.2 }}
-            onClick={closeDrawer}
+            onClick={phase.kind === "placing" ? undefined : closeDrawer}
             className="fixed inset-0 z-40 bg-slate-900/40 backdrop-blur-[1px]"
             aria-hidden="true"
           />
@@ -138,23 +172,32 @@ export function CartDrawer() {
             {/* Header */}
             <header className="flex items-center justify-between border-b border-slate-200 bg-[var(--color-amazon-navy)] px-4 py-3 text-white">
               <h2 className="text-lg font-bold">
-                Your cart{" "}
-                <span className="ml-1 text-sm font-normal text-white/70">
-                  ({count} item{count === 1 ? "" : "s"})
-                </span>
+                {phase.kind === "success" ? (
+                  "Order placed"
+                ) : (
+                  <>
+                    Your cart{" "}
+                    <span className="ml-1 text-sm font-normal text-white/70">
+                      ({count} item{count === 1 ? "" : "s"})
+                    </span>
+                  </>
+                )}
               </h2>
               <button
                 type="button"
                 aria-label="Close cart"
                 onClick={closeDrawer}
-                className="rounded-sm p-1 text-white/80 hover:bg-white/10 hover:text-white"
+                disabled={phase.kind === "placing"}
+                className="rounded-sm p-1 text-white/80 hover:bg-white/10 hover:text-white disabled:opacity-40"
               >
                 <CloseIcon className="h-5 w-5" />
               </button>
             </header>
 
             {/* Body */}
-            {items.length === 0 ? (
+            {phase.kind === "success" ? (
+              <SuccessView order={phase.order} onClose={closeDrawer} />
+            ) : items.length === 0 ? (
               <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
                 <div className="text-5xl">🛒</div>
                 <div className="text-base font-semibold text-slate-800">
@@ -194,15 +237,23 @@ export function CartDrawer() {
                       <span className="font-semibold">₹{formatRupees(totalSavings)}</span>
                     </div>
                   )}
+                  {phase.kind === "error" && (
+                    <div className="mt-2 rounded-md border border-rose-300 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                      {phase.message}
+                    </div>
+                  )}
+                  {!zone && (
+                    <div className="mt-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                      Pick a delivery zone to checkout.
+                    </div>
+                  )}
                   <button
                     type="button"
-                    onClick={() => {
-                      // Wired up later — for now no-op.
-                      console.log("checkout", items);
-                    }}
-                    className="mt-3 w-full rounded-full bg-[var(--color-amazon-yellow)] py-2.5 text-sm font-bold text-slate-900 hover:bg-[var(--color-amazon-yellow-hover)]"
+                    onClick={handleCheckout}
+                    disabled={phase.kind === "placing" || !zone}
+                    className="mt-3 w-full rounded-full bg-[var(--color-amazon-yellow)] py-2.5 text-sm font-bold text-slate-900 hover:bg-[var(--color-amazon-yellow-hover)] disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    Proceed to checkout
+                    {phase.kind === "placing" ? "Placing order…" : "Proceed to checkout"}
                   </button>
                   <p className="mt-2 text-center text-[11px] text-slate-500">
                     Delivery in ~10 min · Free over ₹199
@@ -214,5 +265,77 @@ export function CartDrawer() {
         </>
       )}
     </AnimatePresence>
+  );
+}
+
+function SuccessView({ order, onClose }: { order: Order; onClose: () => void }) {
+  const totalUnits = order.items.reduce((n, it) => n + it.quantity, 0);
+  const created = new Date(order.createdAt);
+
+  return (
+    <div className="flex flex-1 flex-col">
+      <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-5 py-5">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-xl text-white">
+            ✓
+          </div>
+          <div>
+            <div className="text-base font-semibold text-slate-900">
+              Thanks — your order is on the way
+            </div>
+            <div className="text-xs text-slate-500">
+              Order #{order.id.slice(-6).toUpperCase()} · {created.toLocaleString()}
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
+          Delivering to <span className="font-semibold">{order.zone.name}</span> ({order.zone.code}) · ETA ~10 min
+        </div>
+
+        <ul className="space-y-2">
+          {order.items.map((it) => (
+            <li key={it.id} className="flex items-center justify-between text-sm">
+              <div className="min-w-0 pr-3">
+                <div className="truncate font-medium text-slate-800">{it.name}</div>
+                <div className="text-[11px] text-slate-500">
+                  {it.quantity} × ₹{formatRupees(it.price)}
+                </div>
+              </div>
+              <div className="font-semibold tabular-nums text-slate-900">
+                ₹{formatRupees(it.price * it.quantity)}
+              </div>
+            </li>
+          ))}
+        </ul>
+
+        <div className="mt-auto rounded-lg bg-slate-100 px-3 py-2.5">
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-slate-600">
+              Total · {totalUnits} unit{totalUnits === 1 ? "" : "s"}
+            </span>
+            <span className="text-base font-bold text-slate-900 tabular-nums">
+              ₹{formatRupees(order.total)}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <footer className="grid grid-cols-2 gap-2 border-t border-slate-200 bg-slate-50 px-4 py-3">
+        <a
+          href="/orders"
+          className="rounded-full border border-slate-300 bg-white py-2 text-center text-sm font-semibold text-slate-800 hover:bg-slate-100"
+        >
+          View all orders
+        </a>
+        <button
+          type="button"
+          onClick={onClose}
+          className="rounded-full bg-[var(--color-amazon-yellow)] py-2 text-sm font-bold text-slate-900 hover:bg-[var(--color-amazon-yellow-hover)]"
+        >
+          Continue shopping
+        </button>
+      </footer>
+    </div>
   );
 }

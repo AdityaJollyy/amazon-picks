@@ -96,16 +96,16 @@ export function Header({ userName = "Aarav" }: HeaderProps) {
         <AskAiButton />
 
         {/* Account */}
-        <button
-          type="button"
+        <Link
+          to="/orders"
           className="hidden shrink-0 rounded-sm border border-transparent px-2 py-1.5 text-left leading-tight hover:border-white md:block"
         >
           <span className="block text-[12px] text-white/70">Hello, {userName}</span>
           <span className="flex items-center text-sm font-bold">
-            Account &amp; Lists
+            Orders &amp; Account
             <ChevronDownIcon className="ml-0.5 h-3 w-3 text-white/70" />
           </span>
-        </button>
+        </Link>
 
         {/* Cart */}
         <button

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import { Link } from "react-router-dom";
 import { SparkleIcon } from "@/components/ui/Icons";
-import { useCart } from "@/features/cart/useCart";
 import { useZone } from "@/features/zone/useZone";
 import { useVibe } from "@/features/vibe/useVibe";
 import { ApiError } from "@/lib/ApiError";
@@ -11,6 +11,7 @@ import {
   type DraftCart,
   type DraftCartItem,
 } from "@/api/ai.api";
+import { ordersApi, type Order } from "@/api/orders.api";
 import { useAiPanel } from "./useAiPanel";
 
 type UiMessage = {
@@ -299,10 +300,16 @@ function TypingDots() {
 
 /* ───────── draft cart ───────── */
 
+type CheckoutPhase =
+  | { kind: "idle" }
+  | { kind: "placing" }
+  | { kind: "error"; message: string }
+  | { kind: "success"; order: Order };
+
 function DraftCartPanel({ cart }: { cart: DraftCart | null }) {
-  const { add, openDrawer } = useCart();
   const { close } = useAiPanel();
-  const [checkedOut, setCheckedOut] = useState(false);
+  const { zone } = useZone();
+  const [phase, setPhase] = useState<CheckoutPhase>({ kind: "idle" });
 
   const items = cart?.items ?? [];
   const total = cart?.total ?? 0;
@@ -315,30 +322,36 @@ function DraftCartPanel({ cart }: { cart: DraftCart | null }) {
   const itemCount = items.length;
   const totalUnits = items.reduce((n, it) => n + it.quantity, 0);
 
-  const handleCheckout = () => {
-    if (!items.length) return;
-    for (const it of items) {
-      const p = it.product;
-      add(
-        {
-          productId: p.id,
-          name: p.name,
-          brand: p.brand,
-          unit: p.unit,
-          imageUrl: p.imageUrl,
-          price: p.price,
-          mrp: p.mrp,
-          etaMinutes: p.etaMinutes,
-        },
-        it.quantity,
-      );
+  // Reset checkout phase whenever the model proposes a new draft.
+  useEffect(() => {
+    if (phase.kind === "success" || phase.kind === "error") {
+      setPhase({ kind: "idle" });
     }
-    setCheckedOut(true);
-    setTimeout(() => {
-      close();
-      openDrawer();
-    }, 600);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cart]);
+
+  const handleCheckout = async () => {
+    if (!items.length || !zone) return;
+    setPhase({ kind: "placing" });
+    try {
+      const order = await ordersApi.create({
+        zoneCode: zone.code,
+        items: items.map((it) => ({
+          productId: it.product.id,
+          quantity: it.quantity,
+        })),
+      });
+      setPhase({ kind: "success", order });
+    } catch (err) {
+      const message =
+        err instanceof ApiError ? err.message : "Checkout failed";
+      setPhase({ kind: "error", message });
+    }
   };
+
+  if (phase.kind === "success") {
+    return <DraftSuccessPanel order={phase.order} onClose={close} />;
+  }
 
   return (
     <aside className="flex flex-col rounded-2xl border border-white/10 bg-gradient-to-b from-white/[0.06] to-white/[0.02] backdrop-blur-xl">
@@ -390,31 +403,88 @@ function DraftCartPanel({ cart }: { cart: DraftCart | null }) {
             </span>
           </div>
         )}
+        {phase.kind === "error" && (
+          <div className="mt-2 rounded-md border border-rose-400/30 bg-rose-500/10 px-2.5 py-1.5 text-[11px] text-rose-100">
+            {phase.message}
+          </div>
+        )}
         <button
           type="button"
           onClick={handleCheckout}
-          disabled={!items.length || checkedOut}
-          className={
-            "mt-3 w-full rounded-full py-2 text-sm font-semibold transition " +
-            (checkedOut
-              ? "bg-emerald-400 text-slate-900"
-              : "text-white hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none")
-          }
-          style={
-            checkedOut
-              ? undefined
-              : {
-                  backgroundImage:
-                    "linear-gradient(90deg, var(--color-vibe-accent), var(--color-vibe-accent-2))",
-                  boxShadow: "0 6px 24px -6px var(--color-vibe-glow)",
-                }
-          }
+          disabled={!items.length || phase.kind === "placing" || !zone}
+          className="mt-3 w-full rounded-full py-2 text-sm font-semibold text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
+          style={{
+            backgroundImage:
+              "linear-gradient(90deg, var(--color-vibe-accent), var(--color-vibe-accent-2))",
+            boxShadow: "0 6px 24px -6px var(--color-vibe-glow)",
+          }}
         >
-          {checkedOut ? "Added ✓" : "Checkout draft cart"}
+          {phase.kind === "placing" ? "Placing order…" : "Checkout draft cart"}
         </button>
         <p className="mt-1.5 text-center text-[10px] text-slate-500">
           Delivery in ~10 min
         </p>
+      </footer>
+    </aside>
+  );
+}
+
+function DraftSuccessPanel({ order, onClose }: { order: Order; onClose: () => void }) {
+  return (
+    <aside className="flex flex-col rounded-2xl border border-emerald-400/30 bg-gradient-to-b from-emerald-500/10 to-white/[0.02] backdrop-blur-xl">
+      <header className="flex items-center gap-2 border-b border-white/10 px-4 py-3">
+        <div className="flex h-7 w-7 items-center justify-center rounded-full bg-emerald-500 text-sm text-white">
+          ✓
+        </div>
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-white">Order placed</div>
+          <div className="truncate text-[11px] text-slate-400">
+            #{order.id.slice(-6).toUpperCase()} · ETA ~10 min
+          </div>
+        </div>
+      </header>
+
+      <div className="flex-1 overflow-y-auto px-3 py-2">
+        <ul className="space-y-1.5">
+          {order.items.map((it) => (
+            <li key={it.id} className="flex items-center justify-between text-xs">
+              <div className="min-w-0 pr-2">
+                <div className="truncate font-medium text-white">{it.name}</div>
+                <div className="text-[10px] text-slate-400">
+                  {it.quantity} × ₹{formatRupees(it.price)}
+                </div>
+              </div>
+              <div className="font-semibold tabular-nums text-white">
+                ₹{formatRupees(it.price * it.quantity)}
+              </div>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      <footer className="border-t border-white/10 px-3 py-3">
+        <div className="flex items-center justify-between text-xs text-slate-200">
+          <span>Total</span>
+          <span className="font-bold tabular-nums text-white">
+            ₹{formatRupees(order.total)}
+          </span>
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <Link
+            to="/orders"
+            onClick={onClose}
+            className="rounded-full border border-white/20 bg-white/[0.06] py-1.5 text-center text-xs font-semibold text-white hover:bg-white/[0.1]"
+          >
+            View orders
+          </Link>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-full bg-emerald-400 py-1.5 text-xs font-bold text-slate-900 hover:bg-emerald-300"
+          >
+            Done
+          </button>
+        </div>
       </footer>
     </aside>
   );
