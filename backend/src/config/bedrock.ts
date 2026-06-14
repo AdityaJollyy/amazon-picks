@@ -52,7 +52,7 @@ export const generateJSONFromMessages = async <T = unknown>(
       role: m.role,
       content: [{ text: m.content }],
     })),
-    inferenceConfig: { maxTokens: 1024, temperature: 0.3 },
+    inferenceConfig: { maxTokens: 2048, temperature: 0.3 },
   });
 
   const response = await client.send(command);

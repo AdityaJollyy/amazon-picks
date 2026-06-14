@@ -14,6 +14,7 @@ type ProductRow = {
   id: string;
   name: string;
   brand: string;
+  description: string;
   tags: string[];
   category: string;
 };
@@ -23,7 +24,9 @@ const BATCH_PAUSE_MS = 250; // gentle pacing between batches as a backstop
 
 const buildText = (p: ProductRow): string => {
   const tagPart = p.tags.length ? ` ${p.tags.join(" ")}` : "";
-  return `${p.name} ${p.brand} ${p.category}${tagPart}`;
+  // Description gives the embedder real vocabulary to match niche queries
+  // ("paracetamol", "fever", "lactose-free") that aren't in the name/brand/tags.
+  return `${p.name} ${p.brand} ${p.category}${tagPart}. ${p.description}`;
 };
 
 const toVectorLiteral = (vec: number[]): string => `[${vec.join(",")}]`;
@@ -31,16 +34,30 @@ const toVectorLiteral = (vec: number[]): string => `[${vec.join(",")}]`;
 const fetchPending = async (force: boolean): Promise<ProductRow[]> => {
   if (force) {
     const rows = await prisma.product.findMany({
-      select: { id: true, name: true, brand: true, tags: true, category: { select: { name: true } } },
+      select: {
+        id: true,
+        name: true,
+        brand: true,
+        description: true,
+        tags: true,
+        category: { select: { name: true } },
+      },
     });
     return rows.map((r) => ({ ...r, category: r.category.name }));
   }
 
   // Prisma can't filter on Unsupported columns, so use raw SQL for the WHERE.
   const rows = await prisma.$queryRaw<
-    Array<{ id: string; name: string; brand: string; tags: string[]; category: string }>
+    Array<{
+      id: string;
+      name: string;
+      brand: string;
+      description: string;
+      tags: string[];
+      category: string;
+    }>
   >(Prisma.sql`
-    SELECT p."id", p."name", p."brand", p."tags", c."name" AS category
+    SELECT p."id", p."name", p."brand", p."description", p."tags", c."name" AS category
     FROM "Product" p
     JOIN "Category" c ON c."id" = p."categoryId"
     WHERE p."embedding" IS NULL

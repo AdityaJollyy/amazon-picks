@@ -1,161 +1,391 @@
 import { generateJSON } from "../../config/bedrock.js";
 import { ApiError } from "../../utils/ApiError.js";
-import { retrieveCandidates, type RetrievedCandidate } from "./retrieve.service.js";
 import {
-  QUICK_CART_SYSTEM_PROMPT,
-  buildQuickCartUserPrompt,
+  retrieveCandidates,
+  type RetrievedCandidate,
+} from "./retrieve.service.js";
+import {
+  PLAN_SYSTEM_PROMPT,
+  PICK_SYSTEM_PROMPT,
+  buildPlanUserPrompt,
+  buildPickUserPrompt,
   VIBE_CATEGORIES,
-  type ParsedIntent,
+  type ShoppingPlan,
+  type PlannedNeed,
+  type PickResult,
+  type PickedItem,
+  type SkippedItem,
   type VibeCategory,
 } from "./quickCart.prompt.js";
-import {
-  BUDGET_TIERS,
-  selectForTier,
-  type BudgetTier,
-} from "./quickCart.selector.js";
 
 /**
- * Orchestrates the Quick Mode flow:
- *   1. LLM parses free-text intent → vibe + shopping list
- *   2. Hybrid retrieval finds candidate products per item
- *   3. Per-budget-tier selector picks one product per item
- *   4. Carts assembled at three price points; near-duplicates dropped
+ * Two-step AI cart builder, split so the user can SEE and EDIT the plan
+ * before the catalog search runs.
+ *
+ *   planCart()  — Claude reads the customer's intent + context and emits a
+ *                 shopping plan: vibe label, intent summary, and a list of
+ *                 needs with FINAL quantities (no per-person multiplication
+ *                 downstream). No retrieval or product selection happens here.
+ *
+ *   buildCart() — Given a plan (possibly edited by the user — items removed,
+ *                 etc.), runs hybrid retrieval per need with a similarity
+ *                 floor, then asks Claude to pick the best in-stock SKU per
+ *                 line (or skip with a reason). Returns one curated cart plus
+ *                 any dropped lines.
  */
 
-export interface QuickCartInput {
+const RETRIEVAL_LIMIT = 8;
+const MAX_NEEDS = 8;
+const MAX_QTY_PER_LINE = 12;
+const MAX_INTENT_LEN = 500;
+
+export interface PlanInput {
   intent: string;
   groupSize: number;
-  budgetTier: BudgetTier; // currently informational — we always build all 3
   zoneCode: string;
+  zoneLabel?: string;
 }
 
-export interface CartItem {
+export interface BuildInput {
+  intent: string;
+  groupSize: number;
+  zoneCode: string;
+  plan: ShoppingPlan;
+}
+
+export interface QuickCartItem {
   product: RetrievedCandidate;
   quantity: number;
+  why: string;
+  priority: "must" | "nice";
 }
 
-export interface Cart {
-  tier: BudgetTier;
-  title: string;
-  items: CartItem[];
+export interface QuickCartDropped {
+  query: string;
+  reason: string;
+  priority: "must" | "nice";
+}
+
+export interface QuickCart {
+  items: QuickCartItem[];
   total: number;
+  itemCount: number;
 }
 
-export interface QuickCartResult {
+export interface PlanResult {
+  plan: ShoppingPlan;
+}
+
+export interface BuildResult {
   vibe_category: VibeCategory;
-  carts: Cart[];
+  intent_summary: string;
+  cart: QuickCart;
+  dropped: QuickCartDropped[];
 }
 
-const TIER_TITLES: Record<BudgetTier, string> = {
-  Essentials: "Essentials",
-  Standard: "Standard Mix",
-  Premium: "Premium Picks",
-};
-
-const RETRIEVAL_LIMIT = 12; // pool large enough for the selector to choose from
-const MAX_SHOPPING_LIST = 10;
+/* ─────────────────────────────  validators  ───────────────────────────── */
 
 const isVibe = (v: unknown): v is VibeCategory =>
   typeof v === "string" && (VIBE_CATEGORIES as readonly string[]).includes(v);
 
-const validateParsedIntent = (raw: unknown): ParsedIntent => {
-  if (!raw || typeof raw !== "object") {
-    throw new ApiError(502, "AI did not return an object");
-  }
-  const r = raw as Record<string, unknown>;
+const isPriority = (v: unknown): v is "must" | "nice" =>
+  v === "must" || v === "nice";
 
-  if (!isVibe(r.vibe_category)) {
-    throw new ApiError(502, `AI returned invalid vibe_category: ${String(r.vibe_category)}`);
-  }
-  if (!Array.isArray(r.shopping_list) || r.shopping_list.length === 0) {
-    throw new ApiError(502, "AI returned empty or invalid shopping_list");
-  }
-
-  const list = r.shopping_list.slice(0, MAX_SHOPPING_LIST).flatMap((item) => {
+/** Normalize raw needs (from the AI OR from a user-edited request body). */
+const normalizeNeeds = (raw: unknown): PlannedNeed[] => {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  return raw.slice(0, MAX_NEEDS).flatMap((item): PlannedNeed[] => {
     if (!item || typeof item !== "object") return [];
     const i = item as Record<string, unknown>;
     const query = typeof i.query === "string" ? i.query.trim() : "";
     const qty = Number(i.quantity);
     if (!query || !Number.isFinite(qty) || qty <= 0) return [];
-    return [{ query, quantity: Math.max(1, Math.round(qty)) }];
+    const key = query.toLowerCase();
+    if (seen.has(key)) return [];
+    seen.add(key);
+    const priority = isPriority(i.priority) ? i.priority : "must";
+    const note = typeof i.note === "string" ? i.note.trim() : undefined;
+    return [
+      {
+        query,
+        quantity: Math.max(1, Math.min(MAX_QTY_PER_LINE, Math.round(qty))),
+        priority,
+        ...(note ? { note } : {}),
+      },
+    ];
   });
-
-  if (list.length === 0) {
-    throw new ApiError(502, "AI returned no usable shopping_list entries");
-  }
-
-  return { vibe_category: r.vibe_category, shopping_list: list };
 };
 
-const cartFingerprint = (cart: Cart): string =>
-  cart.items.map((i) => `${i.product.id}x${i.quantity}`).sort().join("|");
+const validateAiPlan = (raw: unknown): ShoppingPlan => {
+  if (!raw || typeof raw !== "object") {
+    throw new ApiError(502, "AI plan was not an object");
+  }
+  const r = raw as Record<string, unknown>;
 
-export const generateQuickCart = async (
-  input: QuickCartInput
-): Promise<QuickCartResult> => {
-  const intent = input.intent.trim();
-  if (!intent) throw new ApiError(400, "Intent is required");
+  if (!isVibe(r.vibe_category)) {
+    throw new ApiError(
+      502,
+      `AI returned invalid vibe_category: ${String(r.vibe_category)}`
+    );
+  }
 
-  const groupSize = Math.max(1, Math.min(50, Math.round(input.groupSize)));
+  const intent_summary =
+    typeof r.intent_summary === "string" ? r.intent_summary.trim() : "";
 
-  // Step 1 — parse intent into vibe + shopping list.
-  const parsed = validateParsedIntent(
-    await generateJSON(QUICK_CART_SYSTEM_PROMPT, buildQuickCartUserPrompt(intent, groupSize))
+  const needs = normalizeNeeds(r.needs);
+  if (needs.length === 0) {
+    throw new ApiError(502, "AI plan had no usable needs");
+  }
+
+  return { vibe_category: r.vibe_category, intent_summary, needs };
+};
+
+/** Validate a plan as it arrives from the client (it may have been edited). */
+export const validateClientPlan = (raw: unknown): ShoppingPlan => {
+  if (!raw || typeof raw !== "object") {
+    throw new ApiError(400, "Missing or invalid 'plan'");
+  }
+  const r = raw as Record<string, unknown>;
+
+  if (!isVibe(r.vibe_category)) {
+    throw new ApiError(400, "plan.vibe_category is missing or invalid");
+  }
+
+  const intent_summary =
+    typeof r.intent_summary === "string" ? r.intent_summary.trim() : "";
+
+  const needs = normalizeNeeds(r.needs);
+  if (needs.length === 0) {
+    throw new ApiError(400, "plan.needs must contain at least one item");
+  }
+
+  return { vibe_category: r.vibe_category, intent_summary, needs };
+};
+
+const validatePickResult = (raw: unknown): PickResult => {
+  if (!raw || typeof raw !== "object") {
+    throw new ApiError(502, "AI pick result was not an object");
+  }
+  const r = raw as Record<string, unknown>;
+
+  const picksRaw = Array.isArray(r.picks) ? r.picks : [];
+  const skippedRaw = Array.isArray(r.skipped) ? r.skipped : [];
+
+  const picks: PickedItem[] = picksRaw.flatMap((p): PickedItem[] => {
+    if (!p || typeof p !== "object") return [];
+    const o = p as Record<string, unknown>;
+    const query = typeof o.query === "string" ? o.query.trim() : "";
+    const product_id = typeof o.product_id === "string" ? o.product_id : "";
+    const qty = Number(o.quantity);
+    const why = typeof o.why === "string" ? o.why.trim() : "";
+    if (!query || !product_id || !Number.isFinite(qty) || qty <= 0) return [];
+    return [
+      {
+        query,
+        product_id,
+        quantity: Math.max(1, Math.min(MAX_QTY_PER_LINE, Math.round(qty))),
+        why,
+      },
+    ];
+  });
+
+  const skipped: SkippedItem[] = skippedRaw.flatMap((s): SkippedItem[] => {
+    if (!s || typeof s !== "object") return [];
+    const o = s as Record<string, unknown>;
+    const query = typeof o.query === "string" ? o.query.trim() : "";
+    const reason = typeof o.reason === "string" ? o.reason.trim() : "";
+    if (!query) return [];
+    return [{ query, reason: reason || "no good match" }];
+  });
+
+  return { picks, skipped };
+};
+
+/* ─────────────────────────────  helpers  ───────────────────────────── */
+
+const formatNow = (d: Date): string => {
+  const datePart = d.toLocaleDateString("en-IN", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+  });
+  const timePart = d.toLocaleTimeString("en-IN", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+  const hour = d.getHours();
+  let bucket: string;
+  if (hour < 5) bucket = "late night";
+  else if (hour < 12) bucket = "morning";
+  else if (hour < 17) bucket = "afternoon";
+  else if (hour < 21) bucket = "evening";
+  else bucket = "late night";
+  return `${datePart}, ${timePart} (${bucket})`;
+};
+
+const sanitizeIntent = (intent: string): string => {
+  const trimmed = intent.trim();
+  if (!trimmed) throw new ApiError(400, "Intent is required");
+  if (trimmed.length > MAX_INTENT_LEN) {
+    throw new ApiError(400, `Intent is too long (max ${MAX_INTENT_LEN} chars)`);
+  }
+  return trimmed;
+};
+
+const clampGroupSize = (n: number): number =>
+  Math.max(1, Math.min(20, Math.round(n)));
+
+/* ─────────────────────────────  step 1: PLAN  ───────────────────────────── */
+
+export const planCart = async (input: PlanInput): Promise<PlanResult> => {
+  const intent = sanitizeIntent(input.intent);
+  const groupSize = clampGroupSize(input.groupSize);
+  const zoneLabel = input.zoneLabel?.trim() || input.zoneCode;
+  const nowLabel = formatNow(new Date());
+
+  const plan = validateAiPlan(
+    await generateJSON(
+      PLAN_SYSTEM_PROMPT,
+      buildPlanUserPrompt({ intent, groupSize, zoneLabel, nowLabel })
+    )
   );
 
-  // Step 2 — retrieve candidates for every shopping list item in parallel.
+  return { plan };
+};
+
+/* ─────────────────────────────  step 2: BUILD  ───────────────────────────── */
+
+export const buildCart = async (input: BuildInput): Promise<BuildResult> => {
+  const intent = sanitizeIntent(input.intent);
+  const groupSize = clampGroupSize(input.groupSize);
+  const plan = input.plan;
+
+  // 1. RETRIEVE — one parallel hybrid search per need.
   const retrievals = await Promise.all(
-    parsed.shopping_list.map(async (item) => ({
-      query: item.query,
-      quantity: item.quantity * groupSize,
-      candidates: await retrieveCandidates(item.query, input.zoneCode, {
+    plan.needs.map(async (need) => ({
+      need,
+      candidates: await retrieveCandidates(need.query, input.zoneCode, {
         limit: RETRIEVAL_LIMIT,
       }),
     }))
   );
 
-  // Step 3 — assemble one cart per budget tier.
-  const builtCarts: Cart[] = BUDGET_TIERS.map((tier) => {
-    const items: CartItem[] = [];
-    const seenProductIds = new Set<string>();
+  // Lookup table so we can resolve picked product_ids back to the full
+  // RetrievedCandidate. Only candidates we actually showed the model are
+  // eligible — anything outside this map is treated as a hallucinated id.
+  const candidateById = new Map<string, RetrievedCandidate>();
+  for (const r of retrievals) {
+    for (const c of r.candidates) candidateById.set(c.id, c);
+  }
 
-    for (const r of retrievals) {
-      const product = selectForTier(r.candidates, tier);
-      if (!product) continue;
-      // Dedupe within a cart: if the selector picked the same product for two
-      // different queries (can happen with vague intents), merge quantities.
-      if (seenProductIds.has(product.id)) {
-        const existing = items.find((it) => it.product.id === product.id)!;
-        existing.quantity += r.quantity;
-        continue;
-      }
-      seenProductIds.add(product.id);
-      items.push({ product, quantity: r.quantity });
-    }
+  const autoDropped: QuickCartDropped[] = retrievals
+    .filter((r) => r.candidates.length === 0)
+    .map((r) => ({
+      query: r.need.query,
+      reason: "no in-stock match in your zone",
+      priority: r.need.priority,
+    }));
 
-    const total = items.reduce(
-      (sum, it) => sum + it.product.price * it.quantity,
-      0
-    );
+  const linesForPick = retrievals.filter((r) => r.candidates.length > 0);
 
-    return { tier, title: TIER_TITLES[tier], items, total };
-  }).filter((cart) => cart.items.length > 0);
-
-  // Step 4 — drop carts that are identical to a cheaper tier (no real choice).
-  const seenFingerprints = new Set<string>();
-  const carts = builtCarts.filter((cart) => {
-    const fp = cartFingerprint(cart);
-    if (seenFingerprints.has(fp)) return false;
-    seenFingerprints.add(fp);
-    return true;
-  });
-
-  if (carts.length === 0) {
+  if (linesForPick.length === 0) {
     throw new ApiError(
       404,
-      "Could not build a cart — no in-stock candidates found for this intent in this zone"
+      "Nothing on your list was in stock in your zone right now"
     );
   }
 
-  return { vibe_category: parsed.vibe_category, carts };
+  // 2. PICK — model chooses one product per line (or skips with a reason).
+  const pickRaw = await generateJSON(
+    PICK_SYSTEM_PROMPT,
+    buildPickUserPrompt({
+      plan: { ...plan, needs: linesForPick.map((l) => l.need) },
+      intent,
+      groupSize,
+      candidatesPerNeed: linesForPick.map((l) => ({
+        query: l.need.query,
+        candidates: l.candidates.map((c) => ({
+          id: c.id,
+          name: c.name,
+          brand: c.brand,
+          unit: c.unit,
+          price: c.price,
+          mrp: c.mrp,
+          rating: c.rating,
+          reviewCount: c.reviewCount,
+          stock: c.stock,
+          similarity: c.similarity,
+          rankScore: c.rankScore,
+        })),
+      })),
+    })
+  );
+  const picked = validatePickResult(pickRaw);
+
+  // 3. ASSEMBLE — turn picks into cart items, attach `why`, clamp to stock,
+  //    and skip duplicate product_ids the model accidentally picked twice.
+  const items: QuickCartItem[] = [];
+  const usedProductIds = new Set<string>();
+  const aiSkippedByQuery = new Map<string, string>(
+    picked.skipped.map((s) => [s.query.toLowerCase(), s.reason])
+  );
+  const handledQueries = new Set<string>();
+
+  for (const pick of picked.picks) {
+    const product = candidateById.get(pick.product_id);
+    if (!product) continue;
+    if (usedProductIds.has(product.id)) continue;
+
+    const need = linesForPick
+      .map((l) => l.need)
+      .find((n) => n.query.toLowerCase() === pick.query.toLowerCase());
+    if (!need) continue;
+
+    const quantity = Math.max(
+      1,
+      Math.min(pick.quantity, need.quantity, product.stock, MAX_QTY_PER_LINE)
+    );
+
+    items.push({
+      product,
+      quantity,
+      why: pick.why,
+      priority: need.priority,
+    });
+    usedProductIds.add(product.id);
+    handledQueries.add(need.query.toLowerCase());
+  }
+
+  const aiDropped: QuickCartDropped[] = linesForPick
+    .filter((l) => !handledQueries.has(l.need.query.toLowerCase()))
+    .map((l) => ({
+      query: l.need.query,
+      reason:
+        aiSkippedByQuery.get(l.need.query.toLowerCase()) ?? "no good match",
+      priority: l.need.priority,
+    }));
+
+  const dropped = [...autoDropped, ...aiDropped];
+
+  if (items.length === 0) {
+    throw new ApiError(
+      404,
+      "Couldn't build a cart — nothing matched well enough in your zone"
+    );
+  }
+
+  const total = items.reduce(
+    (sum, it) => sum + it.product.price * it.quantity,
+    0
+  );
+  const itemCount = items.reduce((n, it) => n + it.quantity, 0);
+
+  return {
+    vibe_category: plan.vibe_category,
+    intent_summary: plan.intent_summary,
+    cart: { items, total, itemCount },
+    dropped,
+  };
 };

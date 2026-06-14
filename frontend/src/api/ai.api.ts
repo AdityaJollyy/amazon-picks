@@ -26,35 +26,69 @@ export type RetrievedCandidate = {
 
 export type AiVibe = "medical" | "party" | "emergency" | "casual";
 
-export type BackendBudgetTier = "Essentials" | "Standard" | "Premium";
+export type AiPriority = "must" | "nice";
+
+export type PlannedNeed = {
+  query: string;
+  quantity: number;
+  priority: AiPriority;
+  note?: string;
+};
+
+export type ShoppingPlan = {
+  vibe_category: AiVibe;
+  intent_summary: string;
+  needs: PlannedNeed[];
+};
 
 export type AiCartItem = {
   product: RetrievedCandidate;
   quantity: number;
+  why: string;
+  priority: AiPriority;
 };
 
 export type AiCart = {
-  tier: BackendBudgetTier;
-  title: string;
   items: AiCartItem[];
   total: number;
+  itemCount: number;
 };
 
-export type QuickCartResult = {
+export type AiDropped = {
+  query: string;
+  reason: string;
+  priority: AiPriority;
+};
+
+export type PlanResult = {
+  plan: ShoppingPlan;
+};
+
+export type BuildResult = {
   vibe_category: AiVibe;
-  carts: AiCart[];
+  intent_summary: string;
+  cart: AiCart;
+  dropped: AiDropped[];
 };
 
-export type QuickCartInput = {
+export type PlanInput = {
   intent: string;
   groupSize: number;
-  budgetTier: BackendBudgetTier;
   zoneCode: string;
 };
 
+export type BuildInput = {
+  intent: string;
+  groupSize: number;
+  zoneCode: string;
+  plan: ShoppingPlan;
+};
+
 export const aiApi = {
-  quickCart: (input: QuickCartInput) =>
-    apiClient.post<QuickCartResult>("/ai/quick-cart", input),
+  plan: (input: PlanInput) =>
+    apiClient.post<PlanResult>("/ai/quick-cart/plan", input),
+  build: (input: BuildInput) =>
+    apiClient.post<BuildResult>("/ai/quick-cart/build", input),
   chat: (input: ChatInput) => apiClient.post<ChatResult>("/ai/chat", input),
 };
 

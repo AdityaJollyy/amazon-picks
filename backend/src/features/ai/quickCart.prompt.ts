@@ -1,51 +1,192 @@
 /**
- * Strict-JSON prompts for the Quick Cart parser.
+ * Two-stage prompts for the AI cart builder.
  *
- * The model never sees product data — its only job is to translate the
- * customer's free-text intent into:
- *   - a vibe label (drives the vibe-reactive UI), and
- *   - a normalized shopping list (each line scoped to a single product type).
+ *   Stage 1 — PLAN:  read the customer's intent and produce a shopping plan
+ *                    (vibe + a list of needs with FINAL quantities).
+ *   Stage 2 — PICK:  given the plan and the actual candidates retrieved for
+ *                    each need, choose the best product per line (or skip).
  *
- * Quantities are PER-PERSON baselines; the service multiplies by groupSize
- * before retrieval. Keeping the math out of the LLM makes scaling deterministic
- * across re-runs.
+ * The model is in charge of judgement at both stages. The deterministic
+ * pipeline only handles retrieval, validation, and stock clamps.
  */
 
 export const VIBE_CATEGORIES = ["medical", "party", "emergency", "casual"] as const;
 export type VibeCategory = (typeof VIBE_CATEGORIES)[number];
 
-export interface ParsedIntent {
-  vibe_category: VibeCategory;
-  shopping_list: Array<{ query: string; quantity: number }>;
+export type Priority = "must" | "nice";
+
+export interface PlannedNeed {
+  query: string;
+  quantity: number;
+  priority: Priority;
+  note?: string;
 }
 
-export const QUICK_CART_SYSTEM_PROMPT = `You are a quick-commerce shopping assistant for a Delhi grocery + pharmacy app.
+export interface ShoppingPlan {
+  vibe_category: VibeCategory;
+  intent_summary: string;
+  needs: PlannedNeed[];
+}
 
-Given a customer's free-text intent, output ONLY a single valid JSON object — no prose, no markdown, no code fences. The object must have exactly two top-level keys:
+export interface PickedItem {
+  query: string;
+  product_id: string;
+  quantity: number;
+  why: string;
+}
 
-1. "vibe_category" — one of: "medical", "party", "emergency", "casual"
-   - "medical": fever, headache, cough, injury, period pain, ORS, first aid
-   - "emergency": urgent late-night needs (forgot something critical, ran out of essentials)
-   - "party": birthday, celebration, get-together, friends coming over
-   - "casual": everyday groceries, breakfast, snack, dinner ingredients
+export interface SkippedItem {
+  query: string;
+  reason: string;
+}
 
-2. "shopping_list" — array of 4 to 10 items. Each item is:
-   { "query": <short generic search phrase>, "quantity": <positive integer> }
+export interface PickResult {
+  picks: PickedItem[];
+  skipped: SkippedItem[];
+}
 
-Rules for shopping_list:
-- "query" should be GENERIC enough to match real products via search (e.g. "milk", "paracetamol tablets", "birthday candles", NOT specific brands or sizes)
-- "quantity" is the BASELINE for ONE person — the system multiplies by group size later
-- Cover the actual need: e.g. a fever needs paracetamol + ORS + tissues + a soft drink; a birthday party needs cake + candles + plates + balloons + snacks + drinks
-- Avoid duplicates and overly niche items
-- Round quantities to whole integers (1, 2, 3...)
+/* ─────────────────────────────  STAGE 1 — PLAN  ───────────────────────────── */
+
+export const PLAN_SYSTEM_PROMPT = `You are the planning brain for a quick-commerce app in Delhi (groceries + pharmacy + party + everyday). A customer types one short sentence describing what they need; you turn it into a tight shopping plan that another step will resolve to real products.
+
+Output ONLY a single valid JSON object — no prose, no markdown, no code fences. Schema:
+
+{
+  "vibe_category": "medical" | "party" | "emergency" | "casual",
+  "intent_summary": "<one short sentence — what you understood>",
+  "needs": [
+    {
+      "query": "<2-4 word generic search phrase, e.g. 'paracetamol tablets', 'cola 2 litre', 'birthday candles'>",
+      "quantity": <positive integer — TOTAL units to deliver for the whole group>,
+      "priority": "must" | "nice",
+      "note": "<optional, very short — why this is on the list, or 'shared'/'per person'>"
+    }
+  ]
+}
+
+How to think:
+
+VIBE
+- "medical": fever, headache, cough, period, injury, ORS, first aid → restrict the plan to actual medical needs + at most ONE soft drink/water if useful
+- "emergency": ran out of something critical, late-night forgot-an-item run → 2-5 tightly-scoped items
+- "party": birthday, friends over, celebration → cake/candles/snacks/drinks; remember candles & cake are SHARED
+- "casual": everyday groceries, breakfast, dinner ingredients, movie night → match exactly what was asked
+
+NEEDS — most important rules
+- Output ONLY what the customer actually needs. If they ask for one thing, return one need. Do NOT pad to a minimum.
+- Typical lengths: medical 2-5, emergency 2-5, party 5-8, casual 3-7. Never exceed 8.
+- Each need must be a DISTINCT product type. Do not emit synonyms or near-duplicates ("snacks" + "chips" + "munchies" → just one). The downstream step picks ONE product per line.
+- "quantity" is the TOTAL number of units for the whole group, already accounting for group size and whether the item is shared or per-person:
+    • Shared (cake, candles pack, balloons pack, detergent bottle, ice cream tub): quantity = 1 (or 2 if the group is very large).
+    • Per-person consumable (soft drink can, paracetamol strip, tissues pack, plate, popcorn pouch): quantity ≈ ceil(group_size / units_per_pack).
+    • Per-illness dose (paracetamol, ORS): quantity 1-2 regardless of group size unless multiple people are sick.
+- Realistic ceilings: never request more than 12 units of any one line. If a group genuinely needs more, prefer a larger pack size in the query ("cola 2 litre" instead of qty 12).
+- "priority": "must" for things directly answering the intent; "nice" for sensible add-ons. Mark only 0-2 items as "nice" and only when they truly fit.
+- "query" must match the language of a small Indian grocery app. Use generic categories, not brands ("milk" not "Amul Gold"; "chips" not "Lay's"). Add a size hint when it matters ("cola 2 litre", "ors sachets", "biryani rice 1 kg").
 
 Output JSON only.`;
 
-export const buildQuickCartUserPrompt = (
-  intent: string,
-  groupSize: number
-): string =>
-  `Customer intent: ${intent.trim()}
-Group size: ${groupSize} ${groupSize === 1 ? "person" : "people"}
+export const buildPlanUserPrompt = (input: {
+  intent: string;
+  groupSize: number;
+  zoneLabel: string;
+  nowLabel: string;
+}): string =>
+  `Customer intent: ${input.intent.trim()}
+Group size: ${input.groupSize} ${input.groupSize === 1 ? "person" : "people"}
+Delivery zone: ${input.zoneLabel}
+Time: ${input.nowLabel}
 
-Return the JSON now.`;
+Return the plan JSON now.`;
+
+/* ─────────────────────────────  STAGE 2 — PICK  ───────────────────────────── */
+
+export const PICK_SYSTEM_PROMPT = `You are the buyer brain for a quick-commerce app. You receive (a) a customer's shopping plan and (b) for each line, a small list of real, in-stock candidate products. Your job is to pick ONE product per line — the one a careful shopper would actually buy — or skip the line if nothing is a real match.
+
+Output ONLY a single valid JSON object — no prose, no markdown, no code fences. Schema:
+
+{
+  "picks": [
+    {
+      "query": "<the original need.query, verbatim>",
+      "product_id": "<id from the candidates list for that line — must be one of the provided ids>",
+      "quantity": <positive integer, ≤ planned quantity, ≤ candidate.stock>,
+      "why": "<one short clause: why this product, e.g. 'top-rated, ₹40 cheaper', 'matches strength', 'family pack saves a trip'>"
+    }
+  ],
+  "skipped": [
+    { "query": "<need.query>", "reason": "<one short clause, e.g. 'no real match — closest was a sweet biscuit, not a savoury cracker'>" }
+  ]
+}
+
+How to choose for each line
+- Read the candidate names + brands FIRST. Pick by ACTUAL product fit to the need, not by score.
+- If no candidate genuinely matches the need (e.g. the customer asked for a cough syrup and the candidates are vitamins), put the line in "skipped" with a one-line reason. Skipping a line is BETTER than buying something irrelevant.
+- Among genuinely-fitting candidates: prefer higher rating + reasonable review count, then better price-per-need. Use rankScore as a tiebreaker only.
+- Prefer larger pack sizes when the planned quantity is high (e.g. for qty 6, prefer one 6-pack over six singles when both exist).
+- Never invent or alter product_id. Use the exact id from the candidates array for that line.
+- Never increase quantity beyond what the plan said or beyond candidate.stock. You MAY decrease quantity (e.g. plan said 6 but a 6-pack candidate exists, then quantity = 1).
+- "why" must be one short clause grounded in the candidate fields you can see. Do not fabricate facts.
+
+Cross-line rules
+- Do NOT pick the same product_id for two different lines. If two plan lines map to the same SKU, keep one and skip the other (with reason "already covered by <other line>").
+- Every plan need must appear EXACTLY ONCE — either in "picks" or in "skipped". The two arrays are disjoint and together cover every need.
+
+Output JSON only.`;
+
+export const buildPickUserPrompt = (input: {
+  plan: ShoppingPlan;
+  intent: string;
+  groupSize: number;
+  candidatesPerNeed: Array<{
+    query: string;
+    candidates: Array<{
+      id: string;
+      name: string;
+      brand: string;
+      unit: string;
+      price: number;
+      mrp: number;
+      rating: number;
+      reviewCount: number;
+      stock: number;
+      similarity: number;
+      rankScore: number;
+    }>;
+  }>;
+}): string => {
+  const candidatesBlock = input.candidatesPerNeed
+    .map((line) => {
+      if (line.candidates.length === 0) {
+        return `Need: "${line.query}" — NO CANDIDATES (skip this line).`;
+      }
+      const rows = line.candidates
+        .map(
+          (c, i) =>
+            `  ${i + 1}. id=${c.id}  "${c.name}" — ${c.brand} · ${c.unit} · ₹${c.price} (mrp ₹${c.mrp}) · rating ${c.rating.toFixed(1)} (${c.reviewCount} reviews) · stock ${c.stock} · sim ${c.similarity.toFixed(2)} · rank ${c.rankScore.toFixed(2)}`
+        )
+        .join("\n");
+      return `Need: "${line.query}"\n${rows}`;
+    })
+    .join("\n\n");
+
+  const planBlock = input.plan.needs
+    .map(
+      (n) =>
+        `  - "${n.query}" · qty ${n.quantity} · ${n.priority}${n.note ? ` · ${n.note}` : ""}`
+    )
+    .join("\n");
+
+  return `Customer intent: ${input.intent.trim()}
+Group size: ${input.groupSize}
+Vibe: ${input.plan.vibe_category}
+Plan summary: ${input.plan.intent_summary}
+
+Plan needs:
+${planBlock}
+
+Candidates per need:
+${candidatesBlock}
+
+Pick the best product per line, or skip. Return the JSON now.`;
+};

@@ -11,19 +11,22 @@ import { embed } from "../../config/bedrock.js";
  *
  * Strategy: union keyword matches (ILIKE on name/brand/tags) with the top-K
  * semantic neighbours of the query embedding, dedupe, restrict to in-stock in
- * the requested zone, then order by a blend of semantic similarity and the
- * precomputed rankScore.
+ * the requested zone, drop semantic-only matches below a similarity floor (so
+ * out-of-catalog queries return zero rows instead of irrelevant noise — a
+ * lexical hit on name/brand/tags still surfaces), then order by a blend of
+ * semantic similarity and the precomputed rankScore.
  */
 
 const RETRIEVAL_CONFIG = {
-  // Final ranking blend. Tune in one place.
   weights: {
-    similarity: 0.7, // relevance to the query
-    rankScore: 0.3, // intrinsic quality (rating × reviews × popularity)
+    similarity: 0.7,
+    rankScore: 0.3,
   },
-  // How many semantic neighbours to pull before the rank blend kicks in.
   semanticPoolSize: 50,
-  // Cap on rows returned to the caller.
+  // Cosine similarity floor for semantic-only matches. Tuned for Titan v2
+  // (1024-dim, normalized) on this catalog: anything under ~0.35 is typically
+  // off-topic. Pass `minSimilarity: 0` to retrieveCandidates to disable.
+  minSimilarity: 0.35,
   defaultLimit: 20,
   maxLimit: 50,
 };
@@ -46,24 +49,21 @@ export interface RetrievedCandidate {
   categorySlug: string;
   stock: number;
   etaMinutes: number;
-  similarity: number; // 0..1 cosine similarity
-  rankScore: number; // 0..1 precomputed
-  finalScore: number; // 0..1 blended score used for ordering
+  similarity: number;
+  rankScore: number;
+  finalScore: number;
 }
 
 export interface RetrieveOptions {
   limit?: number;
+  /** Override the default similarity floor; pass 0 to disable. */
+  minSimilarity?: number;
 }
 
-/** Escape ILIKE wildcards (% and _) in user input so a stray % doesn't match everything. */
 const escapeLike = (s: string): string => s.replace(/[\\%_]/g, (c) => `\\${c}`);
 
 const toVectorLiteral = (vec: number[]): string => `[${vec.join(",")}]`;
 
-/**
- * Returns up to `limit` candidates that are in-stock in the given zone, ordered
- * by a blend of semantic similarity to `query` and product rankScore.
- */
 export const retrieveCandidates = async (
   query: string,
   zoneCode: string,
@@ -77,17 +77,14 @@ export const retrieveCandidates = async (
     RETRIEVAL_CONFIG.maxLimit
   );
 
+  const minSim = opts.minSimilarity ?? RETRIEVAL_CONFIG.minSimilarity;
+
   const queryVector = await embed(trimmed);
   const vectorLiteral = toVectorLiteral(queryVector);
   const ilikePattern = `%${escapeLike(trimmed)}%`;
 
   const { weights, semanticPoolSize } = RETRIEVAL_CONFIG;
 
-  // Single round-trip. The CTEs do the heavy lifting in Postgres:
-  //   semantic — top-K nearest by cosine distance
-  //   keyword  — anything matching name/brand/tags (similarity computed too)
-  //   combined — UNION + dedupe taking max similarity per product
-  // Then JOIN with ZoneStock to enforce in-stock-in-this-zone.
   const rows = await prisma.$queryRaw<
     Array<{
       id: string;
@@ -116,6 +113,7 @@ export const retrieveCandidates = async (
       SELECT "id", 1 - ("embedding" <=> ${vectorLiteral}::vector) AS similarity
       FROM "Product"
       WHERE "embedding" IS NOT NULL
+        AND 1 - ("embedding" <=> ${vectorLiteral}::vector) >= ${minSim}::float
       ORDER BY "embedding" <=> ${vectorLiteral}::vector
       LIMIT ${semanticPoolSize}
     ),
@@ -172,11 +170,22 @@ export const retrieveCandidates = async (
     LIMIT ${limit}
   `);
 
-  // Postgres returns numeric/float as strings under some drivers; coerce defensively.
   return rows.map((r) => ({
     ...r,
     similarity: Number(r.similarity),
     rankScore: Number(r.rankScore),
     finalScore: Number(r.finalScore),
   }));
+};
+
+/**
+ * Pick the single best candidate from a retrieval result. The list is already
+ * ordered by finalScore DESC, so the head is the model-blended best fit.
+ * Used by the conversation surface (chat.service.ts) which needs ONE product
+ * per line without invoking the LLM a second time.
+ */
+export const pickBest = (
+  candidates: RetrievedCandidate[]
+): RetrievedCandidate | null => {
+  return candidates[0] ?? null;
 };

@@ -4,9 +4,13 @@ import { ApiResponse } from "../../utils/ApiResponse.js";
 import { ApiError } from "../../utils/ApiError.js";
 import { generateJSON, embed } from "../../config/bedrock.js";
 import { retrieveCandidates } from "../../features/ai/retrieve.service.js";
-import { generateQuickCart } from "../../features/ai/quickCart.service.js";
+import {
+  planCart,
+  buildCart,
+  validateClientPlan,
+} from "../../features/ai/quickCart.service.js";
 import { runChat } from "../../features/ai/chat.service.js";
-import { BUDGET_TIERS, type BudgetTier } from "../../features/ai/quickCart.selector.js";
+import { prisma } from "../../config/prisma.js";
 
 /**
  * GET /api/v1/ai/ping
@@ -60,44 +64,90 @@ export const aiRetrieve = asyncHandler(async (req: Request, res: Response) => {
   );
 });
 
-const isBudgetTier = (v: unknown): v is BudgetTier =>
-  typeof v === "string" && (BUDGET_TIERS as readonly string[]).includes(v);
+const requireZone = async (
+  zoneCode: string
+): Promise<{ name: string; city: string; pincode: string }> => {
+  const zone = await prisma.zone.findUnique({
+    where: { code: zoneCode },
+    select: { name: true, city: true, pincode: true },
+  });
+  if (!zone) throw new ApiError(404, `Unknown zoneCode: ${zoneCode}`);
+  return zone;
+};
 
-/**
- * POST /api/v1/ai/quick-cart
- * Body: { intent, groupSize, budgetTier, zoneCode }
- */
-export const aiQuickCart = asyncHandler(async (req: Request, res: Response) => {
-  const body = req.body as Record<string, unknown> | undefined;
-  if (!body || typeof body !== "object") {
-    throw new ApiError(400, "Missing JSON body");
-  }
-
+const parseIntentField = (body: Record<string, unknown>): string => {
   const intent = typeof body.intent === "string" ? body.intent : "";
   if (!intent.trim()) throw new ApiError(400, "Missing 'intent'");
+  return intent;
+};
 
-  const groupSizeRaw = Number(body.groupSize);
-  if (!Number.isFinite(groupSizeRaw) || groupSizeRaw < 1 || groupSizeRaw > 50) {
-    throw new ApiError(400, "Invalid 'groupSize': expected 1..50");
+const parseGroupSizeField = (body: Record<string, unknown>): number => {
+  const raw = Number(body.groupSize);
+  if (!Number.isFinite(raw) || raw < 1 || raw > 20) {
+    throw new ApiError(400, "Invalid 'groupSize': expected 1..20");
   }
-  const groupSize = Math.round(groupSizeRaw);
+  return Math.round(raw);
+};
 
-  if (!isBudgetTier(body.budgetTier)) {
-    throw new ApiError(400, `Invalid 'budgetTier': expected one of ${BUDGET_TIERS.join(", ")}`);
-  }
-
+const parseZoneCodeField = (body: Record<string, unknown>): string => {
   const zoneCode = typeof body.zoneCode === "string" ? body.zoneCode : "";
   if (!zoneCode) throw new ApiError(400, "Missing 'zoneCode'");
+  return zoneCode;
+};
 
-  const result = await generateQuickCart({
-    intent,
-    groupSize,
-    budgetTier: body.budgetTier,
-    zoneCode,
-  });
+/**
+ * POST /api/v1/ai/quick-cart/plan
+ * Body: { intent, groupSize, zoneCode }
+ *
+ * Step 1 of the Quick Mode flow. The AI reads the customer's intent and
+ * returns a plan (vibe + needs list) WITHOUT touching the catalog yet. The
+ * frontend shows this plan to the user, who can drop items they don't want
+ * before sending it back to /build.
+ */
+export const aiQuickCartPlan = asyncHandler(
+  async (req: Request, res: Response) => {
+    const body = req.body as Record<string, unknown> | undefined;
+    if (!body || typeof body !== "object") {
+      throw new ApiError(400, "Missing JSON body");
+    }
 
-  res.status(200).json(new ApiResponse(200, result, "Quick cart generated"));
-});
+    const intent = parseIntentField(body);
+    const groupSize = parseGroupSizeField(body);
+    const zoneCode = parseZoneCodeField(body);
+    const zone = await requireZone(zoneCode);
+    const zoneLabel = `${zone.name}, ${zone.city} ${zone.pincode}`;
+
+    const result = await planCart({ intent, groupSize, zoneCode, zoneLabel });
+    res.status(200).json(new ApiResponse(200, result, "Plan generated"));
+  }
+);
+
+/**
+ * POST /api/v1/ai/quick-cart/build
+ * Body: { intent, groupSize, zoneCode, plan }
+ *
+ * Step 2 of the Quick Mode flow. Given a plan (possibly edited by the user),
+ * runs hybrid retrieval per need + asks the AI to pick the best in-stock SKU
+ * per line. Returns one curated cart plus any dropped lines.
+ */
+export const aiQuickCartBuild = asyncHandler(
+  async (req: Request, res: Response) => {
+    const body = req.body as Record<string, unknown> | undefined;
+    if (!body || typeof body !== "object") {
+      throw new ApiError(400, "Missing JSON body");
+    }
+
+    const intent = parseIntentField(body);
+    const groupSize = parseGroupSizeField(body);
+    const zoneCode = parseZoneCodeField(body);
+    await requireZone(zoneCode);
+
+    const plan = validateClientPlan(body.plan);
+
+    const result = await buildCart({ intent, groupSize, zoneCode, plan });
+    res.status(200).json(new ApiResponse(200, result, "Cart built"));
+  }
+);
 
 /**
  * POST /api/v1/ai/chat

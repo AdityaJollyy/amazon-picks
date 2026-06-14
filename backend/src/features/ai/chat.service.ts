@@ -1,7 +1,10 @@
 import { generateJSONFromMessages, type ChatMessage } from "../../config/bedrock.js";
 import { ApiError } from "../../utils/ApiError.js";
-import { retrieveCandidates, type RetrievedCandidate } from "./retrieve.service.js";
-import { selectForTier } from "./quickCart.selector.js";
+import {
+  retrieveCandidates,
+  pickBest,
+  type RetrievedCandidate,
+} from "./retrieve.service.js";
 import { CHAT_SYSTEM_PROMPT, type ChatTurn } from "./chat.prompt.js";
 import { VIBE_CATEGORIES, type VibeCategory } from "./quickCart.prompt.js";
 
@@ -94,9 +97,9 @@ const validateMessages = (messages: ChatMessage[]): ChatMessage[] => {
 
 /**
  * Resolve a model-proposed shopping list into a concrete draft cart by running
- * each item through hybrid retrieval and picking the Standard-tier candidate.
- * The conversation surface uses a single tier (Standard) for simplicity —
- * Quick Mode is the surface that exposes Essentials/Premium alternatives.
+ * each item through hybrid retrieval and taking the top blended candidate.
+ * Conversation Mode keeps a simple resolver — Quick Mode is the surface where
+ * the AI also re-picks per line via the two-stage flow.
  */
 const resolveDraftCart = async (
   shoppingList: NonNullable<ChatTurn["shopping_list"]>,
@@ -114,15 +117,12 @@ const resolveDraftCart = async (
   const items: DraftCartItem[] = [];
   const seen = new Set<string>();
   for (const r of retrievals) {
-    const product = selectForTier(r.candidates, "Standard");
+    const product = pickBest(r.candidates);
     if (!product) continue;
-    if (seen.has(product.id)) {
-      const existing = items.find((it) => it.product.id === product.id)!;
-      existing.quantity += r.quantity;
-      continue;
-    }
+    if (seen.has(product.id)) continue;
     seen.add(product.id);
-    items.push({ product, quantity: r.quantity });
+    const quantity = Math.max(1, Math.min(r.quantity, product.stock, 12));
+    items.push({ product, quantity });
   }
 
   if (items.length === 0) return null;

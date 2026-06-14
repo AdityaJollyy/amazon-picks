@@ -4,19 +4,26 @@ import { Wordmark } from "@/components/ui/Wordmark";
 import { useCart } from "@/features/cart/useCart";
 import { useZone } from "@/features/zone/useZone";
 import { useAiPanel } from "@/features/ai/useAiPanel";
-
-const SEARCH_SCOPES = [
-  { label: "All", value: "all" },
-  { label: "Cold Drinks & Juices", value: "cold-drinks-juices" },
-  { label: "Snacks & Munchies", value: "snacks-munchies" },
-  { label: "Party & Celebrations", value: "party-celebrations" },
-];
+import { useAsync } from "@/hooks/useAsync";
+import { categoriesApi } from "@/api/products.api";
+import type { Category } from "@/types/product";
 
 export function Header({ userName = "Aarav" }: { userName?: string }) {
   const navigate = useNavigate();
   const { count } = useCart();
   const { zone } = useZone();
   const { open: openQuick } = useAiPanel();
+
+  const categoriesAsync = useAsync<Category[]>(() => categoriesApi.list(), {
+    deps: [],
+  });
+  const scopes = [
+    { label: "All", value: "all" },
+    ...(categoriesAsync.data ?? []).slice(0, 6).map((c) => ({
+      label: c.name,
+      value: c.slug,
+    })),
+  ];
 
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState("all");
@@ -73,7 +80,7 @@ export function Header({ userName = "Aarav" }: { userName?: string }) {
             className="h-full w-[109px] cursor-pointer border-none bg-[#eef1f3] px-3 text-[13px] text-[#0f1111] focus:outline-none"
             style={{ fontFamily: "inherit" }}
           >
-            {SEARCH_SCOPES.map((s) => (
+            {scopes.map((s) => (
               <option key={s.value} value={s.value}>
                 {s.label}
               </option>
