@@ -85,6 +85,8 @@ export type BuildInput = {
 };
 
 export const aiApi = {
+  quickCart: (input: PlanInput) =>
+    apiClient.post<BuildResult>("/ai/quick-cart", input),
   plan: (input: PlanInput) =>
     apiClient.post<PlanResult>("/ai/quick-cart/plan", input),
   build: (input: BuildInput) =>

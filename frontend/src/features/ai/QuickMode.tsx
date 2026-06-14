@@ -7,16 +7,14 @@ import { useCart } from "@/features/cart/useCart";
 import { useToast } from "@/features/toast/useToast";
 import {
   aiApi,
-  type AiCart,
+  type AiCartItem,
   type AiDropped,
   type BuildResult,
-  type PlannedNeed,
-  type ShoppingPlan,
 } from "@/api/ai.api";
 import { ApiError } from "@/lib/ApiError";
 import { getVibeTheme } from "./vibeTheme";
 
-type QuickStep = "input" | "planning" | "plan" | "building" | "results";
+type QuickStep = "input" | "building" | "results";
 
 const QUICK_CHIPS = [
   { label: "🎬 Movie night for 4", text: "movie night for 4 people, snacks and drinks" },
@@ -25,16 +23,14 @@ const QUICK_CHIPS = [
   { label: "💧 Fever and headache", text: "i have fever and headache, need medicine" },
 ];
 
-const PLANNING_STAGES = [
-  "Reading your request",
-  "Working out what you'll need",
-];
-
+// Single combined progress strip — the user only sees one spinner now.
 const BUILDING_STAGES = [
+  "Reading your request",
   "Searching the catalog in your zone",
   "Picking the best products",
-  "Assembling your cart",
 ];
+
+const MAX_QTY_PER_LINE = 12;
 
 function formatRupees(n: number) {
   return n.toLocaleString("en-IN");
@@ -51,23 +47,21 @@ export function QuickMode() {
   const [intent, setIntent] = useState("");
   const [groupSize, setGroupSize] = useState(4);
 
-  const [planStage, setPlanStage] = useState(0);
   const [buildStage, setBuildStage] = useState(0);
 
-  const [plan, setPlan] = useState<ShoppingPlan | null>(null);
-  const [editedNeeds, setEditedNeeds] = useState<PlannedNeed[]>([]);
   const [result, setResult] = useState<BuildResult | null>(null);
+  // Editable working copy of cart items — quantity tweaks and removals live
+  // here; the original `result.cart` stays as-AI-returned for reference.
+  const [editedItems, setEditedItems] = useState<AiCartItem[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isOpen) return;
     setStep("input");
     setError(null);
-    setPlanStage(0);
     setBuildStage(0);
-    setPlan(null);
-    setEditedNeeds([]);
     setResult(null);
+    setEditedItems([]);
     if (prefill) setIntent(prefill);
   }, [isOpen, prefill]);
 
@@ -91,7 +85,7 @@ export function QuickMode() {
     stageTimers.current = [];
   };
 
-  const runPlan = async () => {
+  const runBuild = async () => {
     const trimmed = intent.trim();
     if (!trimmed) {
       flash("Tell us what you need first");
@@ -103,24 +97,24 @@ export function QuickMode() {
     }
 
     setError(null);
-    setStep("planning");
-    setPlanStage(0);
+    setStep("building");
+    setBuildStage(0);
     clearStageTimers();
-    [700].forEach((ms, i) => {
-      const id = setTimeout(() => setPlanStage(i + 1), ms);
+    [900, 2000].forEach((ms, i) => {
+      const id = setTimeout(() => setBuildStage(i + 1), ms);
       stageTimers.current.push(id);
     });
 
-    const minDelay = new Promise((r) => setTimeout(r, 1400));
+    const minDelay = new Promise((r) => setTimeout(r, 2600));
     try {
       const [res] = await Promise.all([
-        aiApi.plan({ intent: trimmed, groupSize, zoneCode: zone.code }),
+        aiApi.quickCart({ intent: trimmed, groupSize, zoneCode: zone.code }),
         minDelay,
       ]);
-      setPlan(res.plan);
-      setEditedNeeds(res.plan.needs);
-      setPlanStage(2);
-      setStep("plan");
+      setResult(res);
+      setEditedItems(res.cart.items);
+      setBuildStage(BUILDING_STAGES.length);
+      setStep("results");
     } catch (err) {
       const message = err instanceof ApiError ? err.message : "Something went wrong";
       setError(message);
@@ -130,61 +124,26 @@ export function QuickMode() {
     }
   };
 
-  const runBuild = async () => {
-    if (!plan || !zone) return;
-    if (editedNeeds.length === 0) {
-      flash("Keep at least one item in the plan");
-      return;
-    }
-
-    setError(null);
-    setStep("building");
-    setBuildStage(0);
-    clearStageTimers();
-    [800, 1700].forEach((ms, i) => {
-      const id = setTimeout(() => setBuildStage(i + 1), ms);
-      stageTimers.current.push(id);
-    });
-
-    const minDelay = new Promise((r) => setTimeout(r, 2200));
-    try {
-      const [res] = await Promise.all([
-        aiApi.build({
-          intent: intent.trim(),
-          groupSize,
-          zoneCode: zone.code,
-          plan: { ...plan, needs: editedNeeds },
-        }),
-        minDelay,
-      ]);
-      setResult(res);
-      setBuildStage(3);
-      setStep("results");
-    } catch (err) {
-      const message = err instanceof ApiError ? err.message : "Something went wrong";
-      setError(message);
-      setStep("plan");
-    } finally {
-      clearStageTimers();
-    }
-  };
-
-  const removeNeed = (query: string) => {
-    setEditedNeeds((curr) => curr.filter((n) => n.query !== query));
-  };
-
-  const updateNeedQty = (query: string, qty: number) => {
-    setEditedNeeds((curr) =>
-      curr.map((n) =>
-        n.query === query
-          ? { ...n, quantity: Math.max(1, Math.min(12, Math.round(qty))) }
-          : n
-      )
+  const updateQty = (productId: string, qty: number) => {
+    setEditedItems((curr) =>
+      curr.map((it) => {
+        if (it.product.id !== productId) return it;
+        const cap = Math.min(MAX_QTY_PER_LINE, it.product.stock);
+        return { ...it, quantity: Math.max(1, Math.min(cap, Math.round(qty))) };
+      })
     );
   };
 
-  const checkout = (cart: AiCart) => {
-    cart.items.forEach((item) => {
+  const removeItem = (productId: string) => {
+    setEditedItems((curr) => curr.filter((it) => it.product.id !== productId));
+  };
+
+  const checkout = () => {
+    if (editedItems.length === 0) {
+      flash("Add at least one item before checkout");
+      return;
+    }
+    editedItems.forEach((item) => {
       const p = item.product;
       add(
         {
@@ -200,17 +159,14 @@ export function QuickMode() {
         item.quantity,
       );
     });
-    flash(`Added ${cart.itemCount} items to cart`);
+    const totalCount = editedItems.reduce((n, it) => n + it.quantity, 0);
+    flash(`Added ${totalCount} items to cart`);
     close();
     navigate("/checkout");
   };
 
-  const planVibe = plan?.vibe_category;
   const resultVibe = result?.vibe_category;
-  const theme = useMemo(
-    () => getVibeTheme(resultVibe ?? planVibe),
-    [planVibe, resultVibe]
-  );
+  const theme = useMemo(() => getVibeTheme(resultVibe), [resultVibe]);
 
   return (
     <AnimatePresence>
@@ -279,7 +235,7 @@ export function QuickMode() {
                   </span>
                 </div>
                 <div className="text-[13px] text-[#c8d0d8]">
-                  Plan first. Confirm. Then we shop.
+                  Tell us what you need. We'll have a cart ready in seconds.
                 </div>
               </div>
             </div>
@@ -296,7 +252,7 @@ export function QuickMode() {
                 onIntent={setIntent}
                 groupSize={groupSize}
                 onGroupSize={setGroupSize}
-                onSubmit={runPlan}
+                onSubmit={runBuild}
                 zoneLabel={
                   zone
                     ? `${zone.name} · ${zone.pincode}`
@@ -305,35 +261,10 @@ export function QuickMode() {
               />
             )}
 
-            {step === "planning" && (
-              <ThinkingStep
-                title="Planning your cart…"
-                subtitle={`Reading "${intent}" and working out what you'll actually need.`}
-                stages={PLANNING_STAGES}
-                stage={planStage}
-              />
-            )}
-
-            {step === "plan" && plan && (
-              <PlanStep
-                plan={plan}
-                needs={editedNeeds}
-                onRemove={removeNeed}
-                onQty={updateNeedQty}
-                onBack={() => setStep("input")}
-                onConfirm={runBuild}
-                themeAccent={theme.accent}
-                themeSoft={theme.soft}
-                themeGrad={theme.grad}
-                themeName={theme.name}
-                themeEmoji={theme.emoji}
-              />
-            )}
-
             {step === "building" && (
               <ThinkingStep
-                title="Shopping for you…"
-                subtitle={`Finding the best in-stock match for ${editedNeeds.length} item${editedNeeds.length === 1 ? "" : "s"}.`}
+                title="Building your cart…"
+                subtitle={`Reading "${intent}" and shopping your zone for the best matches.`}
                 stages={BUILDING_STAGES}
                 stage={buildStage}
               />
@@ -342,13 +273,16 @@ export function QuickMode() {
             {step === "results" && result && (
               <ResultsStep
                 result={result}
+                items={editedItems}
+                onQty={updateQty}
+                onRemove={removeItem}
                 themeAccent={theme.accent}
                 themeSoft={theme.soft}
                 themeGrad={theme.grad}
                 themeName={theme.name}
                 themeEmoji={theme.emoji}
-                onBack={() => setStep("plan")}
-                onCheckout={() => checkout(result.cart)}
+                onBack={() => setStep("input")}
+                onCheckout={checkout}
               />
             )}
           </motion.div>
@@ -452,13 +386,13 @@ function InputStep({
         <svg width="18" height="18" viewBox="0 0 24 24" fill="#131921" aria-hidden="true">
           <path d="M12 2l1.8 6.4L20 10l-6.2 1.6L12 18l-1.8-6.4L4 10l6.2-1.6z" />
         </svg>
-        Plan my cart
+        Build my cart
       </button>
 
       <div className="mt-[18px] flex justify-center gap-[18px] text-[12px] text-[#8a8f94]">
-        <span>① AI plans</span>
-        <span>② You confirm</span>
-        <span>③ We shop &amp; pick</span>
+        <span>① You ask</span>
+        <span>② AI shops</span>
+        <span>③ Adjust &amp; checkout</span>
       </div>
     </div>
   );
@@ -527,207 +461,13 @@ function ThinkingStep({
   );
 }
 
-/* ───────────── plan ───────────── */
-
-function PlanStep({
-  plan,
-  needs,
-  onRemove,
-  onQty,
-  onBack,
-  onConfirm,
-  themeAccent,
-  themeSoft,
-  themeGrad,
-  themeName,
-  themeEmoji,
-}: {
-  plan: ShoppingPlan;
-  needs: PlannedNeed[];
-  onRemove: (query: string) => void;
-  onQty: (query: string, qty: number) => void;
-  onBack: () => void;
-  onConfirm: () => void;
-  themeAccent: string;
-  themeSoft: string;
-  themeGrad: string;
-  themeName: string;
-  themeEmoji: string;
-}) {
-  const removed = plan.needs.length - needs.length;
-  return (
-    <div>
-      <div className="px-[30px] py-5 text-white" style={{ background: themeGrad }}>
-        <div className="flex items-center gap-3">
-          <div className="text-[36px] leading-none">{themeEmoji}</div>
-          <div className="flex-1">
-            <div className="text-[20px] font-extrabold leading-tight">
-              Here's what I think you'll need
-            </div>
-            {plan.intent_summary && (
-              <div className="mt-0.5 text-[13px] opacity-90">
-                {plan.intent_summary}
-              </div>
-            )}
-          </div>
-          <span
-            className="hidden whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-extrabold uppercase tracking-[0.05em] sm:inline-block"
-            style={{ background: "rgba(255,255,255,0.2)", color: "#fff" }}
-          >
-            {themeName}
-          </span>
-        </div>
-      </div>
-
-      <div className="px-[30px] pb-3 pt-5">
-        <div className="mb-1 flex items-baseline justify-between gap-2">
-          <span className="text-[15px] font-extrabold">
-            Plan ({needs.length} item{needs.length === 1 ? "" : "s"})
-          </span>
-          <span className="text-[12px] text-[#565959]">
-            Edit anything you don't want
-          </span>
-        </div>
-
-        {needs.length === 0 ? (
-          <div className="mt-2.5 rounded-[12px] border border-dashed border-[#d5d9d9] bg-[#fafafa] px-4 py-6 text-center text-[13px] text-[#565959]">
-            Plan is empty. Go back and edit your request.
-          </div>
-        ) : (
-          <ul className="mt-2.5 flex flex-col divide-y divide-[#f0f0f0] overflow-hidden rounded-[12px] border border-[#ececec]">
-            {needs.map((need) => (
-              <PlanLine
-                key={need.query}
-                need={need}
-                accent={themeAccent}
-                soft={themeSoft}
-                onRemove={() => onRemove(need.query)}
-                onQty={(q) => onQty(need.query, q)}
-              />
-            ))}
-          </ul>
-        )}
-
-        {removed > 0 && (
-          <div className="mt-2.5 text-[12px] text-[#565959]">
-            {removed} item{removed === 1 ? "" : "s"} removed.{" "}
-            <button
-              type="button"
-              onClick={onBack}
-              className="cursor-pointer border-none bg-transparent p-0 text-[12px] font-bold text-[#007185] underline"
-            >
-              start over
-            </button>
-          </div>
-        )}
-      </div>
-
-      <div className="px-[30px] pb-[22px] pt-4">
-        <button
-          type="button"
-          onClick={onConfirm}
-          disabled={needs.length === 0}
-          className="flex h-[52px] w-full cursor-pointer items-center justify-center gap-2 rounded-[26px] border-none text-[16px] font-extrabold text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
-          style={{ background: themeAccent, fontFamily: "inherit" }}
-        >
-          Looks good — shop &amp; build my cart
-        </button>
-        <div className="mt-3 flex items-center justify-between">
-          <button
-            type="button"
-            onClick={onBack}
-            className="cursor-pointer border-none bg-transparent text-[13px] font-bold text-[#007185]"
-          >
-            ← Edit request
-          </button>
-          <span className="text-[11px] text-[#a0a5aa]">
-            We'll search your zone and pick the best in-stock items.
-          </span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function PlanLine({
-  need,
-  accent,
-  soft,
-  onRemove,
-  onQty,
-}: {
-  need: PlannedNeed;
-  accent: string;
-  soft: string;
-  onRemove: () => void;
-  onQty: (q: number) => void;
-}) {
-  return (
-    <li className="flex items-center gap-3 bg-white px-3.5 py-3">
-      <span
-        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[14px]"
-        style={{ background: soft, color: accent }}
-      >
-        ✓
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="truncate text-[14px] font-bold text-[#0f1111]">
-            {need.query}
-          </span>
-          {need.priority === "nice" && (
-            <span className="shrink-0 rounded-[5px] bg-[#eef1f3] px-1.5 py-0.5 text-[10px] font-extrabold uppercase tracking-[0.05em] text-[#565959]">
-              nice
-            </span>
-          )}
-        </div>
-        {need.note && (
-          <div className="mt-0.5 truncate text-[12px] text-[#565959]">
-            {need.note}
-          </div>
-        )}
-      </div>
-      <div className="flex shrink-0 items-center gap-2">
-        <div className="inline-flex items-center overflow-hidden rounded-[8px] border border-[#d5d9d9]">
-          <button
-            type="button"
-            onClick={() => onQty(need.quantity - 1)}
-            className="h-7 w-7 cursor-pointer border-none bg-[#f7f7f7] text-[14px] font-bold disabled:opacity-40"
-            disabled={need.quantity <= 1}
-            aria-label={`Decrease quantity of ${need.query}`}
-          >
-            −
-          </button>
-          <span className="w-7 text-center text-[13px] font-extrabold tabular-nums">
-            {need.quantity}
-          </span>
-          <button
-            type="button"
-            onClick={() => onQty(need.quantity + 1)}
-            className="h-7 w-7 cursor-pointer border-none bg-[#f7f7f7] text-[14px] font-bold disabled:opacity-40"
-            disabled={need.quantity >= 12}
-            aria-label={`Increase quantity of ${need.query}`}
-          >
-            +
-          </button>
-        </div>
-        <button
-          type="button"
-          onClick={onRemove}
-          aria-label={`Remove ${need.query}`}
-          className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-full border border-[#e3e3e3] bg-white text-[14px] text-[#8a8f94] transition hover:border-rose-300 hover:bg-rose-50 hover:text-rose-600"
-        >
-          ✕
-        </button>
-      </div>
-    </li>
-  );
-}
-
 /* ───────────── results ───────────── */
 
 function ResultsStep({
   result,
+  items,
+  onQty,
+  onRemove,
   themeAccent,
   themeSoft,
   themeGrad,
@@ -737,6 +477,9 @@ function ResultsStep({
   onCheckout,
 }: {
   result: BuildResult;
+  items: AiCartItem[];
+  onQty: (productId: string, qty: number) => void;
+  onRemove: (productId: string) => void;
   themeAccent: string;
   themeSoft: string;
   themeGrad: string;
@@ -745,11 +488,20 @@ function ResultsStep({
   onBack: () => void;
   onCheckout: () => void;
 }) {
-  const { cart, dropped, intent_summary } = result;
+  const { dropped, intent_summary } = result;
+
+  const total = useMemo(
+    () => items.reduce((sum, it) => sum + it.product.price * it.quantity, 0),
+    [items]
+  );
+  const itemCount = useMemo(
+    () => items.reduce((n, it) => n + it.quantity, 0),
+    [items]
+  );
   const eta = useMemo(() => {
-    if (cart.items.length === 0) return 10;
-    return Math.max(...cart.items.map((it) => it.product.etaMinutes));
-  }, [cart.items]);
+    if (items.length === 0) return 10;
+    return Math.max(...items.map((it) => it.product.etaMinutes));
+  }, [items]);
 
   return (
     <div>
@@ -780,20 +532,28 @@ function ResultsStep({
         <div className="mb-1 flex items-baseline justify-between gap-2">
           <span className="text-[15px] font-extrabold">Your cart</span>
           <span className="text-[12px] text-[#565959]">
-            {cart.itemCount} items · ~{eta} min
+            {itemCount} item{itemCount === 1 ? "" : "s"} · ~{eta} min · adjust below
           </span>
         </div>
 
-        <div className="mt-2.5 flex flex-col divide-y divide-[#f0f0f0] overflow-hidden rounded-[12px] border border-[#ececec]">
-          {cart.items.map((it) => (
-            <CartLine
-              key={it.product.id}
-              item={it}
-              accent={themeAccent}
-              soft={themeSoft}
-            />
-          ))}
-        </div>
+        {items.length === 0 ? (
+          <div className="mt-2.5 rounded-[12px] border border-dashed border-[#d5d9d9] bg-[#fafafa] px-4 py-6 text-center text-[13px] text-[#565959]">
+            Cart is empty. Go back and try a different request.
+          </div>
+        ) : (
+          <div className="mt-2.5 flex flex-col divide-y divide-[#f0f0f0] overflow-hidden rounded-[12px] border border-[#ececec]">
+            {items.map((it) => (
+              <CartLine
+                key={it.product.id}
+                item={it}
+                accent={themeAccent}
+                soft={themeSoft}
+                onQty={(q) => onQty(it.product.id, q)}
+                onRemove={() => onRemove(it.product.id)}
+              />
+            ))}
+          </div>
+        )}
 
         {dropped.length > 0 && <DroppedSection dropped={dropped} />}
       </div>
@@ -802,16 +562,17 @@ function ResultsStep({
         <div className="mb-3 flex items-baseline justify-between rounded-[12px] bg-[#fafafa] px-4 py-3">
           <span className="text-[13px] text-[#565959]">Total</span>
           <span className="text-[24px] font-extrabold text-[#0f1111]">
-            ₹{formatRupees(cart.total)}
+            ₹{formatRupees(total)}
           </span>
         </div>
         <button
           type="button"
           onClick={onCheckout}
-          className="flex h-[52px] w-full cursor-pointer items-center justify-center gap-2 rounded-[26px] border-none text-[16px] font-extrabold text-white transition hover:brightness-110"
+          disabled={items.length === 0}
+          className="flex h-[52px] w-full cursor-pointer items-center justify-center gap-2 rounded-[26px] border-none text-[16px] font-extrabold text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
           style={{ background: themeAccent, fontFamily: "inherit" }}
         >
-          Add all &amp; checkout · ₹{formatRupees(cart.total)}
+          Add all &amp; checkout · ₹{formatRupees(total)}
         </button>
         <div className="mt-3 flex items-center justify-between">
           <button
@@ -819,7 +580,7 @@ function ResultsStep({
             onClick={onBack}
             className="cursor-pointer border-none bg-transparent text-[13px] font-bold text-[#007185]"
           >
-            ← Back to plan
+            ← Try a different request
           </button>
           <span className="text-[11px] text-[#a0a5aa]">
             Powered by AI on Amazon Bedrock
@@ -834,14 +595,20 @@ function CartLine({
   item,
   accent,
   soft,
+  onQty,
+  onRemove,
 }: {
-  item: AiCart["items"][number];
+  item: AiCartItem;
   accent: string;
   soft: string;
+  onQty: (q: number) => void;
+  onRemove: () => void;
 }) {
   const p = item.product;
   const lineTotal = p.price * item.quantity;
   const savings = (p.mrp - p.price) * item.quantity;
+  const cap = Math.min(MAX_QTY_PER_LINE, p.stock);
+
   return (
     <div className="flex items-start gap-3 bg-white px-3.5 py-3">
       <div
@@ -879,6 +646,39 @@ function CartLine({
             “{item.why}”
           </div>
         )}
+        <div className="mt-2 flex items-center gap-2">
+          <div className="inline-flex items-center overflow-hidden rounded-[8px] border border-[#d5d9d9]">
+            <button
+              type="button"
+              onClick={() => onQty(item.quantity - 1)}
+              disabled={item.quantity <= 1}
+              className="h-7 w-7 cursor-pointer border-none bg-[#f7f7f7] text-[14px] font-bold disabled:cursor-not-allowed disabled:opacity-40"
+              aria-label={`Decrease quantity of ${p.name}`}
+            >
+              −
+            </button>
+            <span className="w-7 text-center text-[13px] font-extrabold tabular-nums">
+              {item.quantity}
+            </span>
+            <button
+              type="button"
+              onClick={() => onQty(item.quantity + 1)}
+              disabled={item.quantity >= cap}
+              className="h-7 w-7 cursor-pointer border-none bg-[#f7f7f7] text-[14px] font-bold disabled:cursor-not-allowed disabled:opacity-40"
+              aria-label={`Increase quantity of ${p.name}`}
+            >
+              +
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={onRemove}
+            className="flex h-7 cursor-pointer items-center gap-1 rounded-full border border-[#e3e3e3] bg-white px-2.5 text-[12px] font-bold text-[#8a8f94] transition hover:border-rose-300 hover:bg-rose-50 hover:text-rose-600"
+            aria-label={`Remove ${p.name}`}
+          >
+            ✕ remove
+          </button>
+        </div>
       </div>
       <div className="shrink-0 text-right">
         <div className="text-[14px] font-extrabold text-[#0f1111]">

@@ -7,6 +7,7 @@ import { retrieveCandidates } from "../../features/ai/retrieve.service.js";
 import {
   planCart,
   buildCart,
+  quickCartOneShot,
   validateClientPlan,
 } from "../../features/ai/quickCart.service.js";
 import { runChat } from "../../features/ai/chat.service.js";
@@ -145,6 +146,38 @@ export const aiQuickCartBuild = asyncHandler(
     const plan = validateClientPlan(body.plan);
 
     const result = await buildCart({ intent, groupSize, zoneCode, plan });
+    res.status(200).json(new ApiResponse(200, result, "Cart built"));
+  }
+);
+
+/**
+ * POST /api/v1/ai/quick-cart
+ * Body: { intent, groupSize, zoneCode }
+ *
+ * One-shot Quick Mode: plan + retrieve + pick in a single call. Returns the
+ * built cart directly so the user lands on an editable result without seeing
+ * an intermediate plan screen. Use /quick-cart/plan + /quick-cart/build only
+ * when the UI needs the two-step flow (legacy / chat surfaces).
+ */
+export const aiQuickCart = asyncHandler(
+  async (req: Request, res: Response) => {
+    const body = req.body as Record<string, unknown> | undefined;
+    if (!body || typeof body !== "object") {
+      throw new ApiError(400, "Missing JSON body");
+    }
+
+    const intent = parseIntentField(body);
+    const groupSize = parseGroupSizeField(body);
+    const zoneCode = parseZoneCodeField(body);
+    const zone = await requireZone(zoneCode);
+    const zoneLabel = `${zone.name}, ${zone.city} ${zone.pincode}`;
+
+    const result = await quickCartOneShot({
+      intent,
+      groupSize,
+      zoneCode,
+      zoneLabel,
+    });
     res.status(200).json(new ApiResponse(200, result, "Cart built"));
   }
 );

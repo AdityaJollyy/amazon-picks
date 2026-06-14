@@ -529,36 +529,15 @@ async function main() {
   }
   console.log(`🛒 Created ${products.length} products`);
 
-  // 6. Zone stock — every product is fully stocked in CP. Other zones get a
-  //    random subset so they're not empty, but the demo stays focused on CP.
-  const otherZones = zones.filter((z) => z.code !== DEFAULT_ZONE_CODE);
-  const stockData: {
-    productId: string;
-    zoneId: string;
-    stock: number;
-    etaMinutes: number;
-  }[] = [];
-
-  for (const p of products) {
-    // Always in CP with healthy stock.
-    stockData.push({
-      productId: p.id,
-      zoneId: defaultZone.id,
-      stock: randInt(20, 80),
-      etaMinutes: randInt(8, 16),
-    });
-    // ~30% chance to also appear in any other zone with smaller stock.
-    for (const z of otherZones) {
-      if (Math.random() < 0.3) {
-        stockData.push({
-          productId: p.id,
-          zoneId: z.id,
-          stock: randInt(0, 25),
-          etaMinutes: randInt(10, 20),
-        });
-      }
-    }
-  }
+  // 6. Zone stock — MVP demo: every product lives only in CP. Other zones
+  //    exist so the picker still has options, but they have no stock. This
+  //    keeps the AI cart engine deterministic during the hackathon demo.
+  const stockData = products.map((p) => ({
+    productId: p.id,
+    zoneId: defaultZone.id,
+    stock: randInt(20, 80),
+    etaMinutes: randInt(8, 16),
+  }));
 
   // Batched insert again — this can be tens of thousands of rows.
   const STOCK_BATCH = 1000;

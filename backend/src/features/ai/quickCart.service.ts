@@ -389,3 +389,23 @@ export const buildCart = async (input: BuildInput): Promise<BuildResult> => {
     dropped,
   };
 };
+
+/* ────────────────────────  one-shot: plan + build  ──────────────────────── */
+
+/**
+ * Single-call entry point used by the redesigned Quick Mode UI. Internally
+ * this is `planCart` followed by `buildCart` — same prompts, same retrieval,
+ * same outputs — but the user never sees the intermediate plan. They edit
+ * the final cart instead.
+ */
+export const quickCartOneShot = async (
+  input: PlanInput
+): Promise<BuildResult> => {
+  const { plan } = await planCart(input);
+  return buildCart({
+    intent: input.intent,
+    groupSize: input.groupSize,
+    zoneCode: input.zoneCode,
+    plan,
+  });
+};

@@ -4,12 +4,14 @@ import { zonesApi } from "@/api/products.api";
 import type { Zone } from "@/types/product";
 
 const STORAGE_KEY = "zip:selectedZoneCode";
+// MVP demo: CP is the only stocked zone. Other zones still appear in the
+// picker, but the seeded catalog lives entirely in CP, so we always boot the
+// app there and overwrite any stale localStorage code from earlier sessions.
+const DEMO_ZONE_CODE = "CP";
 
 export function ZoneProvider({ children }: { children: ReactNode }) {
   const [zones, setZones] = useState<Zone[]>([]);
-  const [code, setCode] = useState<string | null>(
-    () => (typeof window !== "undefined" ? window.localStorage.getItem(STORAGE_KEY) : null)
-  );
+  const [code, setCode] = useState<string | null>(DEMO_ZONE_CODE);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -22,11 +24,16 @@ export function ZoneProvider({ children }: { children: ReactNode }) {
       .then((list) => {
         if (cancelled) return;
         setZones(list);
-        // Pick a default zone if none selected (or stored one no longer exists).
-        setCode((prev) => {
-          if (prev && list.some((z) => z.code === prev)) return prev;
-          return list[0]?.code ?? null;
-        });
+        const demo = list.find((z) => z.code === DEMO_ZONE_CODE);
+        const next = demo?.code ?? list[0]?.code ?? null;
+        setCode(next);
+        if (next) {
+          try {
+            window.localStorage.setItem(STORAGE_KEY, next);
+          } catch {
+            // ignore
+          }
+        }
         setError(null);
       })
       .catch((err: Error) => {
