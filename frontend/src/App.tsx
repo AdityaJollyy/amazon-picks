@@ -2,19 +2,19 @@ import { RouterProvider } from "react-router-dom";
 import { router } from "@/router";
 import { CartProvider } from "@/features/cart/CartProvider";
 import { AiPanelProvider } from "@/features/ai/AiPanelProvider";
-import { VibeProvider } from "@/features/vibe/VibeProvider";
 import { ZoneProvider } from "@/features/zone/ZoneProvider";
+import { ToastProvider } from "@/features/toast/ToastProvider";
 
 export default function App() {
   return (
-    <VibeProvider>
-      <ZoneProvider>
-        <CartProvider>
+    <ZoneProvider>
+      <CartProvider>
+        <ToastProvider>
           <AiPanelProvider>
             <RouterProvider router={router} />
           </AiPanelProvider>
-        </CartProvider>
-      </ZoneProvider>
-    </VibeProvider>
+        </ToastProvider>
+      </CartProvider>
+    </ZoneProvider>
   );
 }

@@ -4,6 +4,9 @@ import { Home } from "@/pages/Home";
 import { CategoryPage } from "@/pages/CategoryPage";
 import { ProductPage } from "@/pages/ProductPage";
 import { OrdersPage } from "@/pages/OrdersPage";
+import { CartPage } from "@/pages/CartPage";
+import { CheckoutPage } from "@/pages/CheckoutPage";
+import { OrderSuccessPage } from "@/pages/OrderSuccessPage";
 
 export const router = createBrowserRouter([
   {
@@ -13,8 +16,10 @@ export const router = createBrowserRouter([
       { index: true, element: <Home /> },
       { path: "category/:slug", element: <CategoryPage /> },
       { path: "product/:id", element: <ProductPage /> },
+      { path: "cart", element: <CartPage /> },
+      { path: "checkout", element: <CheckoutPage /> },
+      { path: "order-success", element: <OrderSuccessPage /> },
       { path: "orders", element: <OrdersPage /> },
-      // Future: /cart, /quick, /chat, /restock
     ],
   },
 ]);

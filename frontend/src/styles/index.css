@@ -1,28 +1,35 @@
 @import "tailwindcss";
 
-/* Vibe-reactive theme tokens. The active vibe is set on <html data-vibe="...">.
-   Base storefront uses the Amazon palette and is unaffected by vibe.
-   AI surfaces read --color-vibe-* and animate when these change. */
+/* Amazon Picks tokens — every hex below is authoritative (see design_handoff_amazon_picks/README.md). */
 @theme {
-  --color-amazon-navy: #131921;
-  --color-amazon-navy-light: #232f3e;
-  --color-amazon-yellow: #febd69;
-  --color-amazon-yellow-hover: #f3a847;
-  --color-amazon-orange: #ff9900;
-  --color-amazon-link: #007185;
-  --color-amazon-price: #b12704;
+  --color-nav-ink: #131921;
+  --color-nav-ink-2: #232f3e;
+  --color-nav-ink-3: #37475a;
+  --color-accent-amber: #febd69;
+  --color-accent-orange: #ff9900;
+  --color-cta-yellow-1: #f7dfa5;
+  --color-cta-yellow-2: #f0c14b;
+  --color-cta-border: #c89411;
+  --color-link: #007185;
+  --color-link-hover: #c45500;
+  --color-price-red: #cc0c39;
+  --color-success-green: #007600;
+  --color-delivery-dot: #46e07f;
+  --color-page-bg: #eaeded;
+  --color-card-bg: #ffffff;
+  --color-card-border: #e7e7e7;
+  --color-text-primary: #0f1111;
+  --color-text-secondary: #565959;
+  --color-text-tertiary: #8a8f94;
 
-  /* Vibe defaults = casual */
-  --color-vibe-bg: #ffffff;
-  --color-vibe-fg: #0f172a;
+  /* Vibe-reactive tokens for the Quick Mode results banner. */
+  --color-vibe-name: "Picks";
   --color-vibe-accent: #ff9900;
-  --color-vibe-accent-2: #fbbf24;
-  --color-vibe-accent-soft: rgba(255, 153, 0, 0.18);
-  --color-vibe-muted: #64748b;
-  --color-vibe-glow: rgba(255, 153, 0, 0.45);
-  --color-vibe-panel: #0b1220;
+  --color-vibe-soft: #fff3e0;
+  --color-vibe-grad-from: #ff9900;
+  --color-vibe-grad-to: #ff7847;
 
-  --font-sans: "Inter", "Amazon Ember", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: Arial, Helvetica, sans-serif;
 }
 
 :root {
@@ -36,72 +43,49 @@ body,
 }
 
 body {
+  margin: 0;
   font-family: var(--font-sans);
-  background: #eaeded;
-  color: #0f172a;
+  background: var(--color-page-bg);
+  color: var(--color-text-primary);
   -webkit-font-smoothing: antialiased;
 }
 
-/* Vibe palettes. Properties that derive from these vars (background-color,
-   color, border-color, box-shadow, fill, stroke) interpolate via the
-   transition rule below — giving us a smooth cross-fade between vibes. */
-html[data-vibe="casual"] {
-  --color-vibe-bg: #ffffff;
-  --color-vibe-fg: #0f172a;
-  --color-vibe-accent: #ff9900;
-  --color-vibe-accent-2: #fbbf24;
-  --color-vibe-accent-soft: rgba(255, 153, 0, 0.18);
-  --color-vibe-muted: #64748b;
-  --color-vibe-glow: rgba(255, 153, 0, 0.45);
-  --color-vibe-panel: #0b1220;
+::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
 }
-html[data-vibe="medical"] {
-  --color-vibe-bg: #f0f9ff;
-  --color-vibe-fg: #0c4a6e;
-  --color-vibe-accent: #0ea5e9;
-  --color-vibe-accent-2: #22d3ee;
-  --color-vibe-accent-soft: rgba(14, 165, 233, 0.18);
-  --color-vibe-muted: #475569;
-  --color-vibe-glow: rgba(14, 165, 233, 0.45);
-  --color-vibe-panel: #06223a;
-}
-html[data-vibe="party"] {
-  --color-vibe-bg: #1a0b2e;
-  --color-vibe-fg: #fef3c7;
-  --color-vibe-accent: #ec4899;
-  --color-vibe-accent-2: #a855f7;
-  --color-vibe-accent-soft: rgba(236, 72, 153, 0.20);
-  --color-vibe-muted: #c4b5fd;
-  --color-vibe-glow: rgba(236, 72, 153, 0.55);
-  --color-vibe-panel: #11051f;
-}
-html[data-vibe="emergency"] {
-  --color-vibe-bg: #fef2f2;
-  --color-vibe-fg: #7f1d1d;
-  --color-vibe-accent: #dc2626;
-  --color-vibe-accent-2: #f97316;
-  --color-vibe-accent-soft: rgba(220, 38, 38, 0.20);
-  --color-vibe-muted: #991b1b;
-  --color-vibe-glow: rgba(220, 38, 38, 0.5);
-  --color-vibe-panel: #1a0808;
+::-webkit-scrollbar-thumb {
+  background: #c7cdd1;
+  border-radius: 8px;
 }
 
-/* Smooth cross-fade when vibe changes. We scope this to the `vibe-react`
-   class so the base storefront isn't tinted by the transition. */
-.vibe-react,
-.vibe-react * {
-  transition:
-    background-color 400ms ease,
-    background-image 400ms ease,
-    border-color 400ms ease,
-    color 400ms ease,
-    box-shadow 400ms ease,
-    fill 400ms ease,
-    stroke 400ms ease;
-}
-@media (prefers-reduced-motion: reduce) {
-  .vibe-react,
-  .vibe-react * {
-    transition: none;
+@keyframes ap-spin {
+  to {
+    transform: rotate(360deg);
   }
+}
+@keyframes ap-toast {
+  0% { opacity: 0; transform: translate(-50%, 20px); }
+  12% { opacity: 1; transform: translate(-50%, 0); }
+  88% { opacity: 1; transform: translate(-50%, 0); }
+  100% { opacity: 0; transform: translate(-50%, 20px); }
+}
+@keyframes ap-rise {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.ap-stripe {
+  background-image: repeating-linear-gradient(
+    45deg,
+    #f2f3f3 0 12px,
+    #f7f8f8 12px 24px
+  );
+}
+.ap-stripe-sm {
+  background-image: repeating-linear-gradient(
+    45deg,
+    #f2f3f3 0 10px,
+    #f7f8f8 10px 20px
+  );
 }

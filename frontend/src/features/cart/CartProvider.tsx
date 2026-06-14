@@ -1,11 +1,27 @@
-import { useCallback, useMemo, useReducer, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import { CartContext, type CartContextValue } from "./CartContext";
 import type { CartAction, CartItem, CartState } from "./types";
 
+const STORAGE_KEY = "ap_cart_v1";
 const INITIAL_STATE: CartState = { items: [] };
+
+function readStorage(): CartState {
+  if (typeof window === "undefined") return INITIAL_STATE;
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return INITIAL_STATE;
+    const parsed = JSON.parse(raw);
+    if (parsed && Array.isArray(parsed.items)) return parsed as CartState;
+    return INITIAL_STATE;
+  } catch {
+    return INITIAL_STATE;
+  }
+}
 
 function cartReducer(state: CartState, action: CartAction): CartState {
   switch (action.type) {
+    case "HYDRATE":
+      return action.state;
     case "ADD": {
       const qty = action.qty ?? 1;
       const existing = state.items.find((i) => i.productId === action.item.productId);
@@ -36,8 +52,22 @@ function cartReducer(state: CartState, action: CartAction): CartState {
 }
 
 export function CartProvider({ children }: { children: ReactNode }) {
-  const [state, dispatch] = useReducer(cartReducer, INITIAL_STATE);
+  const [state, dispatch] = useReducer(cartReducer, INITIAL_STATE, readStorage);
   const [isDrawerOpen, setDrawerOpen] = useState(false);
+  const hydrated = useRef(false);
+
+  // Persist on every change (after first render so SSR-style hydration won't wipe state).
+  useEffect(() => {
+    if (!hydrated.current) {
+      hydrated.current = true;
+      return;
+    }
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    } catch {
+      // ignore storage failures (private mode, quota)
+    }
+  }, [state]);
 
   const add = useCallback((item: Omit<CartItem, "qty">, qty?: number) => {
     dispatch({ type: "ADD", item, qty });
