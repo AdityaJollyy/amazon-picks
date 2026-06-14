@@ -13,6 +13,7 @@
     "studio": "prisma studio"
   },
   "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.1068.0",
     "@prisma/adapter-pg": "^7.2.0",
     "@prisma/client": "^7.2.0",
     "cors": "^2.8.5",
