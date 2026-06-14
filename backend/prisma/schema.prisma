@@ -19,6 +19,11 @@ enum OrderStatus {
   CANCELLED
 }
 
+enum RestockStatus {
+  ACTIVE
+  PAUSED
+}
+
 // A delivery zone served by a local dark store. Quick-commerce is zone-based:
 // availability, stock and ETA all depend on which zone the customer is in.
 model Zone {
@@ -67,6 +72,7 @@ model Product {
   category   Category    @relation(fields: [categoryId], references: [id])
   stocks     ZoneStock[]
   orderItems OrderItem[]
+  restockStates RestockState[]
 
   @@index([categoryId])
 }
@@ -94,8 +100,9 @@ model User {
   defaultZoneId String?
   createdAt     DateTime @default(now())
 
-  defaultZone Zone?   @relation(fields: [defaultZoneId], references: [id])
-  orders      Order[]
+  defaultZone   Zone?          @relation(fields: [defaultZoneId], references: [id])
+  orders        Order[]
+  restockStates RestockState[]
 }
 
 model Order {
@@ -127,4 +134,23 @@ model OrderItem {
   product Product @relation(fields: [productId], references: [id])
 
   @@index([orderId])
+}
+
+// Tracks per-(user, product) recurring purchase intervals so the Predictive
+// Restock feature can flag items that are due to be reordered.
+model RestockState {
+  id            String        @id @default(cuid())
+  userId        String
+  productId     String
+  lastOrderedAt DateTime
+  intervalDays  Float // average gap between purchases, in days
+  snoozedUntil  DateTime?
+  status        RestockStatus @default(ACTIVE)
+  updatedAt     DateTime      @updatedAt
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, productId])
+  @@index([userId])
 }

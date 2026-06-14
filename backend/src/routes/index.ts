@@ -5,6 +5,7 @@ import categoriesRoutes from "../modules/categories/categories.routes.js";
 import zonesRoutes from "../modules/zones/zones.routes.js";
 import aiRoutes from "../modules/ai/ai.routes.js";
 import ordersRoutes from "../modules/orders/orders.routes.js";
+import restockRoutes from "../modules/restock/restock.routes.js";
 
 const router = Router();
 
@@ -15,5 +16,6 @@ router.use("/categories", categoriesRoutes);
 router.use("/zones", zonesRoutes);
 router.use("/ai", aiRoutes);
 router.use("/orders", ordersRoutes);
+router.use("/restock", restockRoutes);
 
 export default router;

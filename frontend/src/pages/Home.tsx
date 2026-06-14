@@ -4,6 +4,7 @@ import { useCart } from "@/features/cart/useCart";
 import { useAsync } from "@/hooks/useAsync";
 import { useZone } from "@/features/zone/useZone";
 import { categoriesApi, productsApi } from "@/api/products.api";
+import { RestockSection } from "@/features/restock/RestockSection";
 import type { DisplayProduct } from "@/types/product";
 
 export function Home() {
@@ -70,6 +71,7 @@ export function Home() {
       {!loading && !error && groups.length === 0 && (
         <EmptyZoneCard zoneName={zone?.name} />
       )}
+      <RestockSection />
       {groups.map(({ category, products }) => (
         <ProductRow
           key={category.id}
