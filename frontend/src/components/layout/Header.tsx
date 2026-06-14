@@ -1,8 +1,9 @@
 import { Link, useNavigate } from "react-router-dom";
 import { useState } from "react";
-import { CartIcon, ChevronDownIcon, PinIcon, SearchIcon } from "@/components/ui/Icons";
+import { CartIcon, ChevronDownIcon, SearchIcon } from "@/components/ui/Icons";
 import { useCart } from "@/features/cart/useCart";
 import { AskAiButton } from "@/features/ai/AskAiButton";
+import { ZoneSelector } from "@/features/zone/ZoneSelector";
 
 const SEARCH_CATEGORIES = [
   { label: "All", slug: "all" },
@@ -13,16 +14,11 @@ const SEARCH_CATEGORIES = [
 ];
 
 type HeaderProps = {
-  /** Dummy: location label shown in the pill. */
-  zoneLabel?: string;
-  /** Dummy: short user greeting. */
+  /** Short user greeting. */
   userName?: string;
 };
 
-export function Header({
-  zoneLabel = "Saket 110017",
-  userName = "Aarav",
-}: HeaderProps) {
+export function Header({ userName = "Aarav" }: HeaderProps) {
   const { count: cartCount, openDrawer } = useCart();
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
@@ -55,17 +51,8 @@ export function Header({
           </span>
         </Link>
 
-        {/* Location pill */}
-        <button
-          type="button"
-          className="hidden shrink-0 items-center gap-1 rounded-sm border border-transparent px-2 py-1.5 text-left hover:border-white md:flex"
-        >
-          <PinIcon className="mt-3 h-5 w-5 text-white" />
-          <span className="leading-tight">
-            <span className="block text-[12px] text-white/70">Deliver to</span>
-            <span className="block text-sm font-bold">{zoneLabel}</span>
-          </span>
-        </button>
+        {/* Zone selector pill */}
+        <ZoneSelector />
 
         {/* Search bar */}
         <form

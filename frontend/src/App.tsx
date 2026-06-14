@@ -3,15 +3,18 @@ import { router } from "@/router";
 import { CartProvider } from "@/features/cart/CartProvider";
 import { AiPanelProvider } from "@/features/ai/AiPanelProvider";
 import { VibeProvider } from "@/features/vibe/VibeProvider";
+import { ZoneProvider } from "@/features/zone/ZoneProvider";
 
 export default function App() {
   return (
     <VibeProvider>
-      <CartProvider>
-        <AiPanelProvider>
-          <RouterProvider router={router} />
-        </AiPanelProvider>
-      </CartProvider>
+      <ZoneProvider>
+        <CartProvider>
+          <AiPanelProvider>
+            <RouterProvider router={router} />
+          </AiPanelProvider>
+        </CartProvider>
+      </ZoneProvider>
     </VibeProvider>
   );
 }

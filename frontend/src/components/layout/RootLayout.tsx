@@ -8,7 +8,7 @@ import { VibeSwitcher } from "@/features/vibe/VibeSwitcher";
 export function RootLayout() {
   return (
     <div className="min-h-screen flex flex-col">
-      <Header zoneLabel="Saket 110017" userName="Aarav" />
+      <Header userName="Aarav" />
       <CategoryNav />
       <main className="flex-1">
         <Outlet />

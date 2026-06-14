@@ -3,12 +3,10 @@ import { Link, useParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import { ProductRow } from "@/features/products/ProductGrid";
 import { useCart } from "@/features/cart/useCart";
-import {
-  DUMMY_CATEGORY_GROUPS,
-  getProductById,
-  getRelatedProducts,
-} from "@/features/products/dummyProducts";
-import type { DisplayProduct } from "@/types/product";
+import { useAsync } from "@/hooks/useAsync";
+import { useZone } from "@/features/zone/useZone";
+import { productsApi } from "@/api/products.api";
+import type { DisplayProduct, ProductDetail } from "@/types/product";
 
 function formatRupees(n: number) {
   return n.toLocaleString("en-IN");
@@ -33,27 +31,59 @@ function StarRating({ rating }: { rating: number }) {
   );
 }
 
-function findCategoryName(categoryId: string) {
-  const group = DUMMY_CATEGORY_GROUPS.find((g) => g.id === categoryId);
-  return { name: group?.name ?? "All products", slug: group?.slug ?? "all" };
-}
-
 export function ProductPage() {
   const { id = "" } = useParams<{ id: string }>();
-  const product = getProductById(id);
   const { add, openDrawer } = useCart();
+  const { zone } = useZone();
   const [qty, setQty] = useState(1);
 
-  if (!product) {
+  const productAsync = useAsync(() => productsApi.get(id), { deps: [id] });
+  const product = productAsync.data;
+
+  // Pull fresh "related" via the products list filtered to the same category.
+  const relatedAsync = useAsync(
+    () =>
+      productsApi.list({
+        categorySlug: product?.category?.slug,
+        zoneCode: zone?.code,
+        limit: 10,
+      }),
+    {
+      deps: [product?.category?.slug, zone?.code],
+      immediate: Boolean(product?.category?.slug),
+    },
+  );
+
+  if (productAsync.loading) {
+    return (
+      <div className="mx-auto max-w-[1500px] px-3 py-3 sm:px-4">
+        <div className="grid gap-6 rounded-md bg-white p-4 shadow-sm sm:p-6 lg:grid-cols-[minmax(320px,520px)_1fr_280px]">
+          <div className="aspect-square w-full animate-pulse rounded-md bg-slate-100" />
+          <div className="space-y-3">
+            <div className="h-4 w-24 animate-pulse rounded bg-slate-100" />
+            <div className="h-6 w-3/4 animate-pulse rounded bg-slate-100" />
+            <div className="h-4 w-1/2 animate-pulse rounded bg-slate-100" />
+            <div className="h-10 w-1/3 animate-pulse rounded bg-slate-100" />
+            <div className="h-20 w-full animate-pulse rounded bg-slate-100" />
+          </div>
+          <div className="h-64 animate-pulse rounded bg-slate-100" />
+        </div>
+      </div>
+    );
+  }
+
+  if (productAsync.error || !product) {
     return (
       <div className="mx-auto max-w-[1500px] px-3 py-12 sm:px-4">
         <div className="rounded-md bg-white p-10 text-center shadow-sm">
           <div className="text-4xl">🤷</div>
           <div className="mt-2 text-base font-semibold text-slate-800">
-            Product not found
+            {productAsync.error?.statusCode === 404
+              ? "Product not found"
+              : "Couldn't load this product"}
           </div>
           <p className="mt-1 text-sm text-slate-500">
-            It may be out of catalogue. Try browsing a category.
+            {productAsync.error?.message ?? "It may be out of catalogue."}
           </p>
           <Link
             to="/"
@@ -66,15 +96,49 @@ export function ProductPage() {
     );
   }
 
-  const cat = findCategoryName(product.categoryId);
-  const related = getRelatedProducts(product, 8);
+  return <ProductDetailView product={product} qty={qty} setQty={setQty} onAdd={add} onOpenCart={openDrawer} relatedItems={(relatedAsync.data?.items ?? []) as DisplayProduct[]} zoneName={zone?.name} zoneCode={zone?.code} />;
+}
+
+type DetailViewProps = {
+  product: ProductDetail;
+  qty: number;
+  setQty: (v: number | ((q: number) => number)) => void;
+  onAdd: ReturnType<typeof useCart>["add"];
+  onOpenCart: () => void;
+  relatedItems: DisplayProduct[];
+  zoneName?: string;
+  zoneCode?: string;
+};
+
+function ProductDetailView({
+  product,
+  qty,
+  setQty,
+  onAdd,
+  onOpenCart,
+  relatedItems,
+  zoneName,
+  zoneCode,
+}: DetailViewProps) {
+  const cat = product.category ?? { name: "All products", slug: "all" };
   const discountPct =
     product.mrp > product.price
       ? Math.round(((product.mrp - product.price) / product.mrp) * 100)
       : 0;
   const savings = product.mrp - product.price;
 
-  const buildCartItem = (p: DisplayProduct) => ({
+  // Resolve the current zone's stock + ETA from the availability list.
+  const myAvail = product.availability.find((a) => a.zone.code === zoneCode);
+  const stock = myAvail?.stock ?? 0;
+  const etaMinutes = myAvail?.etaMinutes ?? 12;
+  const inStock = stock > 0;
+
+  // Other zones with stock — small "also available in" hint.
+  const otherStockedZones = product.availability.filter(
+    (a) => a.inStock && a.zone.code !== zoneCode,
+  );
+
+  const buildCartItem = (p: ProductDetail | DisplayProduct, eta: number) => ({
     productId: p.id,
     name: p.name,
     brand: p.brand,
@@ -82,18 +146,20 @@ export function ProductPage() {
     imageUrl: p.imageUrl,
     price: p.price,
     mrp: p.mrp,
-    etaMinutes: p.etaMinutes,
+    etaMinutes: eta,
   });
 
   const handleAddThis = () => {
-    add(buildCartItem(product), qty);
-    openDrawer();
+    onAdd(buildCartItem(product, etaMinutes), qty);
+    onOpenCart();
   };
 
   const handleAddRelated = (p: DisplayProduct) => {
-    add(buildCartItem(p));
-    openDrawer();
+    onAdd(buildCartItem(p, p.etaMinutes ?? etaMinutes));
+    onOpenCart();
   };
+
+  const related = relatedItems.filter((p) => p.id !== product.id).slice(0, 8);
 
   return (
     <div className="mx-auto max-w-[1500px] px-3 py-3 sm:px-4">
@@ -122,7 +188,6 @@ export function ProductPage() {
       >
         {/* Gallery */}
         <div className="flex gap-3">
-          {/* Thumbnails — same image stand-in until backend serves multiple */}
           <div className="hidden flex-col gap-2 sm:flex">
             {[0, 1, 2, 3].map((i) => (
               <button
@@ -144,16 +209,17 @@ export function ProductPage() {
             ))}
           </div>
 
-          {/* Main image */}
           <div className="relative flex-1 overflow-hidden rounded-md bg-slate-50">
             <img
               src={product.imageUrl}
               alt={product.name}
               className="aspect-square w-full object-cover"
             />
-            <span className="absolute left-3 top-3 rounded-full bg-slate-900/85 px-2.5 py-1 text-xs font-semibold text-white shadow-sm backdrop-blur-sm">
-              {product.etaMinutes} min delivery
-            </span>
+            {inStock && (
+              <span className="absolute left-3 top-3 rounded-full bg-slate-900/85 px-2.5 py-1 text-xs font-semibold text-white shadow-sm backdrop-blur-sm">
+                {etaMinutes} min delivery
+              </span>
+            )}
             {discountPct > 0 && (
               <span className="absolute right-3 top-3 rounded-sm bg-[var(--color-amazon-price)] px-2 py-1 text-xs font-bold text-white">
                 -{discountPct}%
@@ -244,20 +310,32 @@ export function ProductPage() {
               {formatRupees(product.price)}
             </span>
           </div>
-          <div className="mt-1 text-xs text-emerald-700">
-            FREE delivery in {product.etaMinutes} min
-          </div>
+          {inStock ? (
+            <div className="mt-1 text-xs text-emerald-700">
+              FREE delivery in {etaMinutes} min
+            </div>
+          ) : (
+            <div className="mt-1 text-xs text-[var(--color-amazon-price)]">
+              Not available in this zone
+            </div>
+          )}
           <div className="mt-1 text-xs text-slate-600">
-            Delivering to <span className="font-semibold">Saket 110017</span>
+            Delivering to <span className="font-semibold">{zoneName ?? "—"}</span>
           </div>
 
           <div
             className={`mt-3 text-sm font-bold ${
-              product.stock > 0 ? "text-emerald-700" : "text-[var(--color-amazon-price)]"
+              inStock ? "text-emerald-700" : "text-[var(--color-amazon-price)]"
             }`}
           >
-            {product.stock > 0 ? "In stock" : "Out of stock"}
+            {inStock ? "In stock" : "Out of stock"}
           </div>
+
+          {!inStock && otherStockedZones.length > 0 && (
+            <div className="mt-2 text-[11px] text-slate-500">
+              Available in: {otherStockedZones.map((a) => a.zone.name).join(", ")}
+            </div>
+          )}
 
           {/* Qty stepper */}
           <div className="mt-3 flex items-center gap-2">
@@ -289,7 +367,7 @@ export function ProductPage() {
             type="button"
             whileTap={{ scale: 0.98 }}
             onClick={handleAddThis}
-            disabled={product.stock === 0}
+            disabled={!inStock}
             className="mt-3 w-full rounded-full bg-[var(--color-amazon-yellow)] py-2 text-sm font-bold text-slate-900 hover:bg-[var(--color-amazon-yellow-hover)] disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
           >
             Add to cart
@@ -297,11 +375,8 @@ export function ProductPage() {
           <motion.button
             type="button"
             whileTap={{ scale: 0.98 }}
-            onClick={() => {
-              add(buildCartItem(product), qty);
-              openDrawer();
-            }}
-            disabled={product.stock === 0}
+            onClick={handleAddThis}
+            disabled={!inStock}
             className="mt-2 w-full rounded-full bg-[var(--color-amazon-orange)] py-2 text-sm font-bold text-slate-900 hover:brightness-95 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
           >
             Buy now
@@ -313,7 +388,7 @@ export function ProductPage() {
         </aside>
       </motion.section>
 
-      {/* Frequently bought together row */}
+      {/* Related row */}
       {related.length > 0 && (
         <div className="mt-3">
           <ProductRow
