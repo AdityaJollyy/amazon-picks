@@ -2,38 +2,57 @@ import { Link } from "react-router-dom";
 import { ProductCard } from "@/features/products/ProductCard";
 import type { DisplayProduct } from "@/types/product";
 
-type ProductRowProps = {
-  title: string;
-  /** If provided, the section header links here (e.g. /category/snacks). */
-  seeAllHref?: string;
-  products: DisplayProduct[];
-  onAdd?: (product: DisplayProduct) => void;
+type DecoratedProduct = {
+  product: DisplayProduct;
+  qty: number;
+  onAdd: (product: DisplayProduct) => void;
+  onInc: (product: DisplayProduct) => void;
+  onDec: (product: DisplayProduct) => void;
 };
 
-/** Amazon-style category row: white card with a heading and a horizontal,
- *  snap-scrolling strip of ProductCards. */
-export function ProductRow({ title, seeAllHref, products, onAdd }: ProductRowProps) {
+type ProductRowProps = {
+  title: string;
+  subtitle?: string;
+  /** If provided, renders a "See all →" link in the row header. */
+  seeAllHref?: string;
+  cards: DecoratedProduct[];
+};
+
+/** Amazon Picks row card: white panel, title + subtitle + See all,
+ *  then a horizontally-scrolling strip of 212px ProductCard columns. */
+export function ProductRow({ title, subtitle, seeAllHref, cards }: ProductRowProps) {
+  if (!cards.length) return null;
+
   return (
-    <section className="rounded-md bg-white shadow-sm">
-      <header className="flex items-end justify-between gap-4 px-4 pt-4">
-        <h2 className="text-xl font-bold text-slate-900">{title}</h2>
+    <section className="mb-[18px] rounded-xl border border-[#e7e7e7] bg-white p-[18px_18px_20px]">
+      <header className="mb-3.5 flex items-center justify-between">
+        <div>
+          <h2 className="m-0 text-[21px] font-extrabold text-[#0f1111]">{title}</h2>
+          {subtitle && (
+            <div className="mt-0.5 text-[13px] text-[#565959]">{subtitle}</div>
+          )}
+        </div>
         {seeAllHref && (
           <Link
             to={seeAllHref}
-            className="text-sm font-medium text-[var(--color-amazon-link)] hover:text-[var(--color-amazon-price)] hover:underline"
+            className="text-[14px] font-bold text-[#007185] hover:text-[#c45500]"
           >
-            See all
+            See all →
           </Link>
         )}
       </header>
-
       <div
-        className="flex snap-x snap-mandatory gap-3 overflow-x-auto scroll-smooth px-4 pb-4 pt-3"
-        // a touch of horizontal padding so first/last cards aren't flush
+        className="grid auto-cols-[212px] grid-flow-col gap-3.5 overflow-x-auto pb-1.5"
       >
-        {products.map((p) => (
-          <div key={p.id} className="snap-start">
-            <ProductCard product={p} onAdd={onAdd} />
+        {cards.map((c) => (
+          <div key={c.product.id} className="h-[370px]">
+            <ProductCard
+              product={c.product}
+              qty={c.qty}
+              onAdd={c.onAdd}
+              onInc={c.onInc}
+              onDec={c.onDec}
+            />
           </div>
         ))}
       </div>
@@ -42,17 +61,26 @@ export function ProductRow({ title, seeAllHref, products, onAdd }: ProductRowPro
 }
 
 type ProductGridProps = {
-  products: DisplayProduct[];
-  onAdd?: (product: DisplayProduct) => void;
+  cards: DecoratedProduct[];
 };
 
-/** Plain responsive grid (used on category / search pages later). */
-export function ProductGrid({ products, onAdd }: ProductGridProps) {
+/** 5-column grid used on category / search pages. */
+export function ProductGrid({ cards }: ProductGridProps) {
   return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-      {products.map((p) => (
-        <ProductCard key={p.id} product={p} onAdd={onAdd} />
+    <div className="grid grid-cols-2 gap-3.5 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+      {cards.map((c) => (
+        <div key={c.product.id} className="h-[370px]">
+          <ProductCard
+            product={c.product}
+            qty={c.qty}
+            onAdd={c.onAdd}
+            onInc={c.onInc}
+            onDec={c.onDec}
+          />
+        </div>
       ))}
     </div>
   );
 }
+
+export type { DecoratedProduct };

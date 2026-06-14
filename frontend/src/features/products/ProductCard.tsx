@@ -1,27 +1,30 @@
-import { motion } from "framer-motion";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import type { DisplayProduct } from "@/types/product";
 import { cn } from "@/lib/cn";
 
 type ProductCardProps = {
   product: DisplayProduct;
+  qty?: number;
   onAdd?: (product: DisplayProduct) => void;
+  onInc?: (product: DisplayProduct) => void;
+  onDec?: (product: DisplayProduct) => void;
   className?: string;
 };
 
 function StarRating({ rating }: { rating: number }) {
-  // 5 stars, fill proportional to rating. Uses CSS clip via width %.
   const pct = Math.max(0, Math.min(100, (rating / 5) * 100));
   return (
     <span
-      className="relative inline-block text-[14px] leading-none"
+      className="relative inline-block h-4 text-[13px] leading-none text-[#e3e6e6]"
+      style={{ letterSpacing: "1px" }}
       aria-label={`${rating} out of 5`}
     >
-      <span className="text-slate-300">★★★★★</span>
+      ★★★★★
       <span
-        className="absolute inset-0 overflow-hidden text-[var(--color-amazon-orange)]"
-        style={{ width: `${pct}%` }}
         aria-hidden="true"
+        className="absolute left-0 top-0 overflow-hidden whitespace-nowrap text-[#ffa41c]"
+        style={{ width: `${pct}%` }}
       >
         ★★★★★
       </span>
@@ -33,94 +36,147 @@ function formatRupees(n: number) {
   return n.toLocaleString("en-IN");
 }
 
-export function ProductCard({ product, onAdd, className }: ProductCardProps) {
-  const discountPct =
-    product.mrp > product.price
-      ? Math.round(((product.mrp - product.price) / product.mrp) * 100)
-      : 0;
-  const outOfStock = product.stock === 0;
+export function ProductCard({
+  product,
+  qty = 0,
+  onAdd,
+  onInc,
+  onDec,
+  className,
+}: ProductCardProps) {
+  const [imgError, setImgError] = useState(false);
+  const hasImage = !!product.imageUrl && !imgError;
+  const hasDiscount = product.mrp > product.price;
+  const discountStr = hasDiscount
+    ? `-${Math.round((1 - product.price / product.mrp) * 100)}%`
+    : "";
+  const inCart = qty > 0;
 
   return (
     <article
       className={cn(
-        "group flex w-[200px] shrink-0 flex-col rounded-md border border-slate-200 bg-white p-3 transition-shadow hover:shadow-md sm:w-[220px]",
+        "relative flex h-full w-full flex-col rounded-lg border border-[#e7e7e7] bg-white p-2.5 transition-shadow",
+        "hover:translate-y-[-2px] hover:shadow-[0_6px_18px_rgba(0,0,0,0.1)]",
         className
       )}
+      style={{ fontFamily: "Arial, Helvetica, sans-serif" }}
     >
-      {/* Image with ETA badge */}
+      {/* Image with badges */}
       <Link
         to={`/product/${product.id}`}
         aria-label={product.name}
-        className="relative mb-3 block aspect-square overflow-hidden rounded-sm bg-slate-50"
+        className="relative mb-2 block h-[170px] overflow-hidden rounded-md bg-[#f7f8f8]"
       >
-        <img
-          src={product.imageUrl}
-          alt={product.name}
-          loading="lazy"
-          className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
-        />
-        <span className="absolute left-2 top-2 rounded-full bg-slate-900/85 px-2 py-0.5 text-[11px] font-semibold text-white shadow-sm backdrop-blur-sm">
+        <div className="ap-stripe-sm absolute inset-0 flex items-center justify-center p-3.5 text-center">
+          <span
+            className="text-[11px] leading-snug text-[#9aa0a6]"
+            style={{ fontFamily: "'Courier New',monospace" }}
+          >
+            {product.name}
+          </span>
+        </div>
+        {hasImage && (
+          <img
+            src={product.imageUrl}
+            alt={product.name}
+            loading="lazy"
+            onError={() => setImgError(true)}
+            className="absolute inset-0 h-full w-full bg-white object-contain p-2"
+          />
+        )}
+        <span className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-[20px] bg-[rgba(19,25,33,0.88)] px-2 py-[3px] text-[11px] font-bold text-white">
+          <span className="inline-block h-1.5 w-1.5 rounded-full bg-[#46e07f]" />
           {product.etaMinutes} min
         </span>
-        {discountPct > 0 && (
-          <span className="absolute right-2 top-2 rounded-sm bg-[var(--color-amazon-price)] px-1.5 py-0.5 text-[11px] font-bold text-white">
-            -{discountPct}%
+        {hasDiscount && (
+          <span className="absolute right-2 top-2 rounded-[4px] bg-[#cc0c39] px-[7px] py-[3px] text-[11px] font-extrabold text-white">
+            {discountStr}
           </span>
         )}
       </Link>
 
-      {/* Brand */}
-      <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
-        {product.brand}
-      </div>
-
-      {/* Title — clamp to 2 lines */}
+      {/* Body (title click target) */}
       <Link
         to={`/product/${product.id}`}
-        className="mt-0.5 line-clamp-2 min-h-[2.5rem] text-sm leading-tight text-slate-800 hover:text-[var(--color-amazon-link)]"
+        className="flex flex-1 cursor-pointer flex-col"
       >
-        {product.name}
+        <div className="mb-0.5 text-[11px] font-bold uppercase tracking-[0.04em] text-[#8a8f94]">
+          {product.brand}
+        </div>
+        <div
+          className="mb-1.5 line-clamp-2 min-h-[38px] text-[14px] font-normal leading-[1.35] text-[#0f1111]"
+          title={product.name}
+        >
+          {product.name}
+        </div>
+        <div className="mb-1.5 text-[12px] text-[#8a8f94]">{product.unit}</div>
+        <div className="mb-2 flex items-center gap-1.5">
+          <StarRating rating={product.rating} />
+          <span className="text-[12px] text-[#007185]">
+            ({formatRupees(product.reviewCount)})
+          </span>
+        </div>
+
+        <div className="mt-auto flex items-baseline gap-1.5">
+          <span className="text-[13px] text-[#0f1111]">₹</span>
+          <span className="text-[21px] font-bold leading-none text-[#0f1111]">
+            {formatRupees(product.price)}
+          </span>
+          {hasDiscount && (
+            <span className="text-[12px] text-[#8a8f94] line-through">
+              ₹{formatRupees(product.mrp)}
+            </span>
+          )}
+        </div>
       </Link>
 
-      {/* Unit */}
-      <div className="mt-0.5 text-xs text-slate-500">{product.unit}</div>
-
-      {/* Rating */}
-      <div className="mt-1 flex items-center gap-1">
-        <StarRating rating={product.rating} />
-        <span className="text-xs text-[var(--color-amazon-link)]">
-          ({formatRupees(product.reviewCount)})
-        </span>
-      </div>
-
-      {/* Price */}
-      <div className="mt-1 flex items-baseline gap-1.5">
-        <span className="text-[11px] text-slate-700">₹</span>
-        <span className="text-lg font-bold leading-none text-slate-900">
-          {formatRupees(product.price)}
-        </span>
-        {product.mrp > product.price && (
-          <span className="text-xs text-slate-500 line-through">
-            ₹{formatRupees(product.mrp)}
-          </span>
+      {/* Add / stepper */}
+      <div className="mt-2.5">
+        {inCart ? (
+          <div
+            className="flex h-9 items-center justify-between overflow-hidden rounded-[20px] border border-[#c89411]"
+            style={{ background: "linear-gradient(#f7dfa5,#f0c14b)" }}
+          >
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                onDec?.(product);
+              }}
+              aria-label="Decrease quantity"
+              className="h-full w-11 cursor-pointer border-none bg-transparent text-xl font-bold text-[#3b2f00]"
+            >
+              −
+            </button>
+            <span className="text-[15px] font-bold text-[#0f1111] tabular-nums">
+              {qty}
+            </span>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                onInc?.(product);
+              }}
+              aria-label="Increase quantity"
+              className="h-full w-11 cursor-pointer border-none bg-transparent text-xl font-bold text-[#3b2f00]"
+            >
+              +
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              onAdd?.(product);
+            }}
+            className="h-9 w-full cursor-pointer rounded-[20px] border border-[#c89411] text-[14px] font-semibold text-[#0f1111] transition hover:brightness-95"
+            style={{ background: "linear-gradient(#f7dfa5,#f0c14b)" }}
+          >
+            Add
+          </button>
         )}
       </div>
-
-      {/* Add button */}
-      <motion.button
-        type="button"
-        disabled={outOfStock}
-        onClick={() => onAdd?.(product)}
-        whileTap={{ scale: 0.97 }}
-        className={cn(
-          "mt-3 w-full rounded-full py-1.5 text-sm font-semibold transition-colors",
-          outOfStock
-            ? "cursor-not-allowed bg-slate-100 text-slate-400"
-            : "bg-[var(--color-amazon-yellow)] text-slate-900 hover:bg-[var(--color-amazon-yellow-hover)]"
-        )}
-      >
-        {outOfStock ? "Out of stock" : "Add"}
-      </motion.button>
     </article>
   );
 }

@@ -20,6 +20,7 @@ export type CartState = {
 };
 
 export type CartAction =
+  | { type: "HYDRATE"; state: CartState }
   | { type: "ADD"; item: Omit<CartItem, "qty">; qty?: number }
   | { type: "REMOVE"; productId: string }
   | { type: "SET_QTY"; productId: string; qty: number }

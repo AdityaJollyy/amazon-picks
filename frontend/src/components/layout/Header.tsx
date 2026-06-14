@@ -1,30 +1,27 @@
 import { Link, useNavigate } from "react-router-dom";
 import { useState } from "react";
-import { CartIcon, ChevronDownIcon, SearchIcon } from "@/components/ui/Icons";
+import { Wordmark } from "@/components/ui/Wordmark";
 import { useCart } from "@/features/cart/useCart";
-import { AskAiButton } from "@/features/ai/AskAiButton";
-import { ZoneSelector } from "@/features/zone/ZoneSelector";
+import { useZone } from "@/features/zone/useZone";
+import { useAiPanel } from "@/features/ai/useAiPanel";
 
-const SEARCH_CATEGORIES = [
-  { label: "All", slug: "all" },
-  { label: "Fresh", slug: "fresh" },
-  { label: "Snacks", slug: "snacks" },
-  { label: "Pharmacy", slug: "pharmacy" },
-  { label: "Beverages", slug: "beverages" },
+const SEARCH_SCOPES = [
+  { label: "All", value: "all" },
+  { label: "Cold Drinks & Juices", value: "cold-drinks-juices" },
+  { label: "Snacks & Munchies", value: "snacks-munchies" },
+  { label: "Party & Celebrations", value: "party-celebrations" },
 ];
 
-type HeaderProps = {
-  /** Short user greeting. */
-  userName?: string;
-};
-
-export function Header({ userName = "Aarav" }: HeaderProps) {
-  const { count: cartCount, openDrawer } = useCart();
+export function Header({ userName = "Aarav" }: { userName?: string }) {
   const navigate = useNavigate();
+  const { count } = useCart();
+  const { zone } = useZone();
+  const { open: openQuick } = useAiPanel();
+
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState("all");
 
-  const handleSearch = (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const q = query.trim();
     const params = q ? `?q=${encodeURIComponent(q)}` : "";
@@ -32,99 +29,152 @@ export function Header({ userName = "Aarav" }: HeaderProps) {
   };
 
   return (
-    <header className="bg-[var(--color-amazon-navy)] text-white">
-      <div className="mx-auto flex max-w-[1500px] items-center gap-2 px-2 py-1.5 sm:gap-3 sm:px-4">
-        {/* Logo */}
-        <Link
-          to="/"
-          aria-label="Zip — go home"
-          className="flex shrink-0 items-end rounded-sm border border-transparent px-2 py-2 hover:border-white"
-        >
-          <span className="text-2xl font-extrabold leading-none tracking-tight">
-            zip
-          </span>
-          <span className="ml-0.5 text-2xl font-extrabold leading-none text-[var(--color-amazon-yellow)]">
-            .
-          </span>
-          <span className="ml-1 hidden pb-0.5 text-[10px] font-medium text-white/70 sm:inline">
-            in
-          </span>
-        </Link>
+    <header className="sticky top-0 z-40 bg-[#131921] text-white">
+      {/* Top nav */}
+      <div className="mx-auto flex max-w-[1680px] items-center gap-3.5 px-[18px] py-2">
+        <Wordmark />
 
-        {/* Zone selector pill */}
-        <ZoneSelector />
+        {/* Deliver-to pill */}
+        <button
+          type="button"
+          onClick={() => navigate("/")}
+          className="flex shrink-0 items-center gap-1 rounded-[4px] border border-transparent px-1.5 py-1.5 text-left leading-[1.15] hover:border-white"
+        >
+          <svg
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="#cfd6dc"
+            strokeWidth="1.8"
+            aria-hidden="true"
+          >
+            <path d="M12 2C8 2 5 5 5 9c0 5 7 12 7 12s7-7 7-12c0-4-3-7-7-7z" />
+            <circle cx="12" cy="9" r="2.4" />
+          </svg>
+          <span>
+            <span className="block text-[11px] text-[#cfd6dc]">Deliver to {userName}</span>
+            <span className="block text-[13px] font-bold text-white">
+              {zone ? `${zone.name} ${zone.pincode}` : "Connaught Place 110001"}
+            </span>
+          </span>
+        </button>
 
         {/* Search bar */}
         <form
           role="search"
-          onSubmit={handleSearch}
-          className="flex h-10 min-w-0 flex-1 overflow-hidden rounded-md focus-within:ring-2 focus-within:ring-[var(--color-amazon-yellow)]"
+          onSubmit={handleSubmit}
+          className="flex h-[42px] min-w-0 flex-1 items-stretch overflow-hidden rounded-lg bg-white"
         >
-          <label className="hidden shrink-0 items-center gap-1 border-r border-slate-300 bg-slate-200 px-2 text-xs text-slate-900 hover:bg-slate-300 sm:flex">
-            <select
-              value={scope}
-              onChange={(e) => setScope(e.target.value)}
-              aria-label="Search category"
-              className="appearance-none bg-transparent py-1 pr-4 text-xs text-slate-900 focus:outline-none"
-            >
-              {SEARCH_CATEGORIES.map((c) => (
-                <option key={c.slug} value={c.slug}>
-                  {c.label}
-                </option>
-              ))}
-            </select>
-            <ChevronDownIcon className="-ml-4 h-3 w-3 text-slate-700" />
-          </label>
+          <select
+            value={scope}
+            onChange={(e) => setScope(e.target.value)}
+            aria-label="Search category"
+            className="h-full w-[109px] cursor-pointer border-none bg-[#eef1f3] px-3 text-[13px] text-[#0f1111] focus:outline-none"
+            style={{ fontFamily: "inherit" }}
+          >
+            {SEARCH_SCOPES.map((s) => (
+              <option key={s.value} value={s.value}>
+                {s.label}
+              </option>
+            ))}
+          </select>
           <input
             type="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search Zip"
-            aria-label="Search Zip"
-            className="min-w-0 flex-1 bg-white px-3 text-sm text-slate-900 placeholder-slate-500 focus:outline-none"
+            placeholder="Search Amazon Picks"
+            aria-label="Search Amazon Picks"
+            className="min-w-0 flex-1 border-none px-3.5 text-[15px] text-[#0f1111] placeholder-[#8a8f94] focus:outline-none"
+            style={{ fontFamily: "inherit" }}
           />
           <button
             type="submit"
             aria-label="Search"
-            className="flex shrink-0 items-center justify-center bg-[var(--color-amazon-yellow)] px-3 text-slate-900 hover:bg-[var(--color-amazon-yellow-hover)] sm:px-4"
+            className="flex w-[52px] shrink-0 items-center justify-center"
+            style={{ background: "linear-gradient(#ffd97a,#febd69)" }}
           >
-            <SearchIcon className="h-5 w-5" />
+            <svg
+              width="22"
+              height="22"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="#131921"
+              strokeWidth="2.2"
+              aria-hidden="true"
+            >
+              <circle cx="11" cy="11" r="7" />
+              <path d="M21 21l-5-5" strokeLinecap="round" />
+            </svg>
           </button>
         </form>
 
-        {/* Ask AI */}
-        <AskAiButton />
+        {/* Quick Mode CTA */}
+        <button
+          type="button"
+          onClick={() => openQuick()}
+          className="flex h-[42px] shrink-0 items-center gap-[7px] rounded-[22px] px-4 text-[14px] font-extrabold text-[#131921] transition hover:brightness-105"
+          style={{
+            background: "linear-gradient(95deg,#ff9900,#ff7847)",
+            fontFamily: "inherit",
+            boxShadow: "0 2px 10px rgba(255,140,40,0.45)",
+          }}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="#131921" aria-hidden="true">
+            <path d="M12 2l1.8 6.4L20 10l-6.2 1.6L12 18l-1.8-6.4L4 10l6.2-1.6z" />
+          </svg>
+          Quick Mode
+          <span
+            className="rounded-[5px] px-1.5 py-px text-[11px] font-bold"
+            style={{ background: "rgba(19,25,33,0.16)" }}
+          >
+            AI
+          </span>
+        </button>
 
         {/* Account */}
         <Link
           to="/orders"
-          className="hidden shrink-0 rounded-sm border border-transparent px-2 py-1.5 text-left leading-tight hover:border-white md:block"
+          className="hidden shrink-0 flex-col rounded-[4px] border border-transparent px-1.5 py-1.5 leading-[1.15] hover:border-white md:flex"
         >
-          <span className="block text-[12px] text-white/70">Hello, {userName}</span>
-          <span className="flex items-center text-sm font-bold">
-            Orders &amp; Account
-            <ChevronDownIcon className="ml-0.5 h-3 w-3 text-white/70" />
-          </span>
+          <span className="text-[11px] text-[#cfd6dc]">Hello, {userName}</span>
+          <span className="text-[13px] font-bold text-white">Account &amp; Lists ▾</span>
         </Link>
 
         {/* Cart */}
-        <button
-          type="button"
-          onClick={openDrawer}
-          aria-label={`Cart, ${cartCount} item${cartCount === 1 ? "" : "s"}`}
-          className="relative flex shrink-0 items-end rounded-sm border border-transparent px-2 py-2 hover:border-white"
+        <Link
+          to="/cart"
+          aria-label={`Cart, ${count} item${count === 1 ? "" : "s"}`}
+          className="relative flex shrink-0 items-center gap-2 rounded-[4px] border border-transparent px-2 py-1.5 hover:border-white"
         >
           <div className="relative">
-            <CartIcon className="h-8 w-8" />
-            <span
+            <svg
+              width="30"
+              height="30"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="#fff"
+              strokeWidth="1.7"
               aria-hidden="true"
-              className="absolute -top-1 left-4 min-w-[20px] rounded-full bg-[var(--color-amazon-orange)] px-1 text-center text-xs font-bold leading-5 text-slate-900"
             >
-              {cartCount}
+              <circle cx="9" cy="20" r="1.3" />
+              <circle cx="17" cy="20" r="1.3" />
+              <path
+                d="M2 3h3l2.3 12h10l2-8H6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+            <span
+              className="absolute -right-[7px] -top-1.5 flex h-5 min-w-5 items-center justify-center rounded-[10px] px-1.5 text-[12px] font-extrabold text-[#131921]"
+              style={{ background: "#febd69" }}
+              aria-hidden="true"
+            >
+              {count}
             </span>
           </div>
-          <span className="ml-1 hidden text-sm font-bold sm:inline">Cart</span>
-        </button>
+          <span className="hidden text-[14px] font-bold text-white sm:inline">Cart</span>
+        </Link>
       </div>
     </header>
   );
