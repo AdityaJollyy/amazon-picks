@@ -2,13 +2,25 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { SparkleIcon } from "@/components/ui/Icons";
 import { useCart } from "@/features/cart/useCart";
+import { useZone } from "@/features/zone/useZone";
+import { useVibe } from "@/features/vibe/useVibe";
+import { ApiError } from "@/lib/ApiError";
+import {
+  aiApi,
+  type ChatMessage as ApiChatMessage,
+  type DraftCart,
+  type DraftCartItem,
+} from "@/api/ai.api";
 import { useAiPanel } from "./useAiPanel";
-import { CONVERSATION_SCRIPT, resolveProducts } from "./conversationScript";
-import type { DisplayProduct } from "@/types/product";
 
-type ChatMessage =
-  | { id: string; role: "assistant"; text: string }
-  | { id: string; role: "user"; text: string };
+type UiMessage = {
+  id: string;
+  role: "assistant" | "user";
+  text: string;
+};
+
+const OPENING_LINE =
+  "Hey! Tell me what you need — a meal, a fix, a party — and I'll build a cart for you.";
 
 function formatRupees(n: number) {
   return n.toLocaleString("en-IN");
@@ -18,45 +30,78 @@ function uid() {
   return Math.random().toString(36).slice(2, 9);
 }
 
+const SUGGESTED_OPENERS = [
+  "Breakfast for 2",
+  "I have a fever",
+  "Birthday party for 6",
+  "Restock my groceries",
+];
+
 export function Conversation() {
-  // Always render the first assistant message up front.
-  const [messages, setMessages] = useState<ChatMessage[]>(() => [
-    { id: uid(), role: "assistant", text: CONVERSATION_SCRIPT[0]!.assistantText },
+  const [messages, setMessages] = useState<UiMessage[]>(() => [
+    { id: uid(), role: "assistant", text: OPENING_LINE },
   ]);
-  const [step, setStep] = useState(0);
-  const [draft, setDraft] = useState<DisplayProduct[]>([]);
+  const [draftCart, setDraftCart] = useState<DraftCart | null>(null);
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const currentReplies = CONVERSATION_SCRIPT[step]?.suggestedReplies ?? [];
-  const atEnd = step >= CONVERSATION_SCRIPT.length - 1;
+  const { zone } = useZone();
+  const { setVibe } = useVibe();
 
-  const handleSend = (raw: string) => {
+  // Stateless backend — keep the full transcript here and send it every turn.
+  // We don't include the local opening line: the backend conversation starts
+  // with the user's first message.
+  const apiHistoryRef = useRef<ApiChatMessage[]>([]);
+
+  const handleSend = async (raw: string) => {
     const text = raw.trim();
-    if (!text || isTyping || atEnd) return;
+    if (!text || isTyping) return;
+    if (!zone) {
+      setError("Pick a delivery zone first.");
+      return;
+    }
 
     setInput("");
+    setError(null);
+
+    const userTurn: ApiChatMessage = { role: "user", content: text };
+    apiHistoryRef.current = [...apiHistoryRef.current, userTurn];
+
     setMessages((m) => [...m, { id: uid(), role: "user", text }]);
-
-    const next = step + 1;
-    const nextStep = CONVERSATION_SCRIPT[next];
-    if (!nextStep) return;
-
     setIsTyping(true);
-    window.setTimeout(() => {
-      setDraft((prev) => {
-        const additions = resolveProducts(nextStep.addProductIds).filter(
-          (p) => !prev.some((x) => x.id === p.id),
-        );
-        return additions.length ? [...prev, ...additions] : prev;
+
+    try {
+      const result = await aiApi.chat({
+        messages: apiHistoryRef.current,
+        zoneCode: zone.code,
       });
+
+      apiHistoryRef.current = [
+        ...apiHistoryRef.current,
+        { role: "assistant", content: result.reply },
+      ];
+
+      setVibe(result.vibe_category);
       setMessages((m) => [
         ...m,
-        { id: uid(), role: "assistant", text: nextStep.assistantText },
+        { id: uid(), role: "assistant", text: result.reply },
       ]);
-      setStep(next);
+      // null draftCart means "still asking" — keep whatever was previously
+      // resolved on the screen so an in-progress cart isn't wiped by a follow-up
+      // question. Only overwrite when the model returns a new resolved cart.
+      if (result.draftCart) setDraftCart(result.draftCart);
+    } catch (err) {
+      const message =
+        err instanceof ApiError ? err.message : "Something went wrong";
+      setError(message);
+      // Drop the user turn from the API history on failure so the next send
+      // doesn't keep replaying it. The UI bubble stays so the user sees what
+      // they typed.
+      apiHistoryRef.current = apiHistoryRef.current.slice(0, -1);
+    } finally {
       setIsTyping(false);
-    }, 850);
+    }
   };
 
   return (
@@ -64,13 +109,13 @@ export function Conversation() {
       <ChatThread
         messages={messages}
         isTyping={isTyping}
-        atEnd={atEnd}
-        suggested={currentReplies}
+        error={error}
+        suggested={messages.length === 1 ? SUGGESTED_OPENERS : []}
         onSend={handleSend}
         input={input}
         setInput={setInput}
       />
-      <DraftCartPanel items={draft} />
+      <DraftCartPanel cart={draftCart} />
     </div>
   );
 }
@@ -80,15 +125,15 @@ export function Conversation() {
 function ChatThread({
   messages,
   isTyping,
-  atEnd,
+  error,
   suggested,
   onSend,
   input,
   setInput,
 }: {
-  messages: ChatMessage[];
+  messages: UiMessage[];
   isTyping: boolean;
-  atEnd: boolean;
+  error: string | null;
   suggested: string[];
   onSend: (text: string) => void;
   input: string;
@@ -99,7 +144,7 @@ function ChatThread({
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [messages, isTyping]);
+  }, [messages, isTyping, error]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -139,11 +184,24 @@ function ChatThread({
               </Bubble>
             </motion.div>
           )}
+          {error && !isTyping && (
+            <motion.div
+              key="error"
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              className="flex justify-start"
+            >
+              <div className="max-w-[88%] rounded-2xl border border-rose-400/30 bg-rose-500/10 px-3.5 py-2 text-sm text-rose-100">
+                {error}
+              </div>
+            </motion.div>
+          )}
         </AnimatePresence>
       </div>
 
       {/* Suggested replies */}
-      {suggested.length > 0 && !isTyping && !atEnd && (
+      {suggested.length > 0 && !isTyping && (
         <div className="flex flex-wrap gap-1.5 px-4 pb-2">
           {suggested.map((s) => (
             <button
@@ -167,14 +225,14 @@ function ChatThread({
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder={atEnd ? "Conversation finished — checkout when ready" : "Type your reply…"}
-          disabled={atEnd || isTyping}
+          placeholder="Type your reply…"
+          disabled={isTyping}
           aria-label="Chat with AI"
           className="min-w-0 flex-1 rounded-full border border-white/10 bg-white/[0.04] px-4 py-2 text-sm text-white placeholder-slate-500 transition focus:outline-none disabled:opacity-50 focus:[box-shadow:inset_0_0_0_1px_var(--color-vibe-accent)]"
         />
         <button
           type="submit"
-          disabled={atEnd || isTyping || !input.trim()}
+          disabled={isTyping || !input.trim()}
           aria-label="Send"
           className="rounded-full px-4 py-2 text-sm font-semibold text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
           style={{
@@ -194,7 +252,7 @@ function Bubble({
   role,
   children,
 }: {
-  role: ChatMessage["role"];
+  role: UiMessage["role"];
   children: React.ReactNode;
 }) {
   const base = "max-w-[88%] rounded-2xl px-3.5 py-2 text-sm leading-snug";
@@ -241,20 +299,26 @@ function TypingDots() {
 
 /* ───────── draft cart ───────── */
 
-function DraftCartPanel({ items }: { items: DisplayProduct[] }) {
-  const { add } = useCart();
+function DraftCartPanel({ cart }: { cart: DraftCart | null }) {
+  const { add, openDrawer } = useCart();
   const { close } = useAiPanel();
   const [checkedOut, setCheckedOut] = useState(false);
 
-  const totals = useMemo(() => {
-    const total = items.reduce((n, p) => n + p.price, 0);
-    const totalMrp = items.reduce((n, p) => n + p.mrp, 0);
-    return { total, savings: Math.max(0, totalMrp - total) };
-  }, [items]);
+  const items = cart?.items ?? [];
+  const total = cart?.total ?? 0;
+
+  const totalMrp = useMemo(
+    () => items.reduce((n, it) => n + it.product.mrp * it.quantity, 0),
+    [items],
+  );
+  const savings = Math.max(0, totalMrp - total);
+  const itemCount = items.length;
+  const totalUnits = items.reduce((n, it) => n + it.quantity, 0);
 
   const handleCheckout = () => {
     if (!items.length) return;
-    for (const p of items) {
+    for (const it of items) {
+      const p = it.product;
       add(
         {
           productId: p.id,
@@ -266,11 +330,14 @@ function DraftCartPanel({ items }: { items: DisplayProduct[] }) {
           mrp: p.mrp,
           etaMinutes: p.etaMinutes,
         },
-        1,
+        it.quantity,
       );
     }
     setCheckedOut(true);
-    setTimeout(() => close(), 700);
+    setTimeout(() => {
+      close();
+      openDrawer();
+    }, 600);
   };
 
   return (
@@ -284,7 +351,8 @@ function DraftCartPanel({ items }: { items: DisplayProduct[] }) {
           Draft cart
         </div>
         <span className="text-[11px] text-slate-400 tabular-nums">
-          {items.length} item{items.length === 1 ? "" : "s"}
+          {itemCount} item{itemCount === 1 ? "" : "s"}
+          {totalUnits !== itemCount && itemCount > 0 && ` · ${totalUnits} units`}
         </span>
       </header>
 
@@ -299,34 +367,8 @@ function DraftCartPanel({ items }: { items: DisplayProduct[] }) {
         ) : (
           <ul className="space-y-1">
             <AnimatePresence initial={false}>
-              {items.map((p) => (
-                <motion.li
-                  key={p.id}
-                  layout
-                  initial={{ opacity: 0, x: 12, scale: 0.96 }}
-                  animate={{ opacity: 1, x: 0, scale: 1 }}
-                  exit={{ opacity: 0, x: 12 }}
-                  transition={{ type: "spring", damping: 24, stiffness: 280 }}
-                  className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-white/[0.04]"
-                >
-                  <div className="h-9 w-9 shrink-0 overflow-hidden rounded-md border border-white/10 bg-slate-900">
-                    <img
-                      src={p.imageUrl}
-                      alt=""
-                      loading="lazy"
-                      className="h-full w-full object-cover"
-                    />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-xs font-medium text-white">
-                      {p.name}
-                    </div>
-                    <div className="text-[10px] text-slate-400">{p.unit}</div>
-                  </div>
-                  <div className="text-xs font-semibold tabular-nums text-white">
-                    ₹{formatRupees(p.price)}
-                  </div>
-                </motion.li>
+              {items.map((it) => (
+                <DraftRow key={it.product.id} item={it} />
               ))}
             </AnimatePresence>
           </ul>
@@ -337,14 +379,14 @@ function DraftCartPanel({ items }: { items: DisplayProduct[] }) {
         <div className="flex items-center justify-between text-sm text-slate-200">
           <span>Total</span>
           <span className="font-bold text-white tabular-nums">
-            ₹{formatRupees(totals.total)}
+            ₹{formatRupees(total)}
           </span>
         </div>
-        {totals.savings > 0 && (
+        {savings > 0 && (
           <div className="mt-0.5 flex items-center justify-between text-[11px] text-emerald-400">
             <span>You save</span>
             <span className="font-semibold tabular-nums">
-              ₹{formatRupees(totals.savings)}
+              ₹{formatRupees(savings)}
             </span>
           </div>
         )}
@@ -375,5 +417,40 @@ function DraftCartPanel({ items }: { items: DisplayProduct[] }) {
         </p>
       </footer>
     </aside>
+  );
+}
+
+function DraftRow({ item }: { item: DraftCartItem }) {
+  const p = item.product;
+  return (
+    <motion.li
+      layout
+      initial={{ opacity: 0, x: 12, scale: 0.96 }}
+      animate={{ opacity: 1, x: 0, scale: 1 }}
+      exit={{ opacity: 0, x: 12 }}
+      transition={{ type: "spring", damping: 24, stiffness: 280 }}
+      className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-white/[0.04]"
+    >
+      <div className="relative h-9 w-9 shrink-0 overflow-hidden rounded-md border border-white/10 bg-slate-900">
+        <img
+          src={p.imageUrl}
+          alt=""
+          loading="lazy"
+          className="h-full w-full object-cover"
+        />
+        {item.quantity > 1 && (
+          <span className="absolute -right-1 -top-1 rounded-full bg-slate-900 px-1 text-[9px] font-bold text-white ring-1 ring-white/30">
+            ×{item.quantity}
+          </span>
+        )}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-xs font-medium text-white">{p.name}</div>
+        <div className="text-[10px] text-slate-400">{p.unit}</div>
+      </div>
+      <div className="text-xs font-semibold tabular-nums text-white">
+        ₹{formatRupees(p.price * item.quantity)}
+      </div>
+    </motion.li>
   );
 }

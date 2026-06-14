@@ -23,15 +23,36 @@ export const generateJSON = async <T = unknown>(
   systemPrompt: string,
   userPrompt: string
 ): Promise<T> => {
+  return generateJSONFromMessages<T>(systemPrompt, [
+    { role: "user", content: userPrompt },
+  ]);
+};
+
+export type ChatMessage = { role: "user" | "assistant"; content: string };
+
+/**
+ * Multi-turn variant of generateJSON. Pass the full conversation history;
+ * the model still must return a single JSON object for the final assistant turn.
+ */
+export const generateJSONFromMessages = async <T = unknown>(
+  systemPrompt: string,
+  messages: ChatMessage[]
+): Promise<T> => {
   if (!env.BEDROCK_MODEL_ID) {
     throw new ApiError(500, "BEDROCK_MODEL_ID is not configured");
+  }
+  if (messages.length === 0 || messages[0]!.role !== "user") {
+    throw new ApiError(400, "Conversation must start with a user message");
   }
 
   const command = new ConverseCommand({
     modelId: env.BEDROCK_MODEL_ID,
     system: [{ text: systemPrompt }],
-    messages: [{ role: "user", content: [{ text: userPrompt }] }],
-    inferenceConfig: { maxTokens: 1024, temperature: 0.2 },
+    messages: messages.map((m) => ({
+      role: m.role,
+      content: [{ text: m.content }],
+    })),
+    inferenceConfig: { maxTokens: 1024, temperature: 0.3 },
   });
 
   const response = await client.send(command);

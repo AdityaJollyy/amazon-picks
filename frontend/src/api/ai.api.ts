@@ -55,4 +55,31 @@ export type QuickCartInput = {
 export const aiApi = {
   quickCart: (input: QuickCartInput) =>
     apiClient.post<QuickCartResult>("/ai/quick-cart", input),
+  chat: (input: ChatInput) => apiClient.post<ChatResult>("/ai/chat", input),
+};
+
+/* ───────── chat ───────── */
+
+export type ChatRole = "user" | "assistant";
+export type ChatMessage = { role: ChatRole; content: string };
+
+export type ChatInput = {
+  messages: ChatMessage[];
+  zoneCode: string;
+};
+
+export type DraftCartItem = {
+  product: RetrievedCandidate;
+  quantity: number;
+};
+
+export type DraftCart = {
+  items: DraftCartItem[];
+  total: number;
+};
+
+export type ChatResult = {
+  reply: string;
+  vibe_category: AiVibe;
+  draftCart: DraftCart | null;
 };

@@ -5,6 +5,7 @@ import { ApiError } from "../../utils/ApiError.js";
 import { generateJSON, embed } from "../../config/bedrock.js";
 import { retrieveCandidates } from "../../features/ai/retrieve.service.js";
 import { generateQuickCart } from "../../features/ai/quickCart.service.js";
+import { runChat } from "../../features/ai/chat.service.js";
 import { BUDGET_TIERS, type BudgetTier } from "../../features/ai/quickCart.selector.js";
 
 /**
@@ -96,4 +97,31 @@ export const aiQuickCart = asyncHandler(async (req: Request, res: Response) => {
   });
 
   res.status(200).json(new ApiResponse(200, result, "Quick cart generated"));
+});
+
+/**
+ * POST /api/v1/ai/chat
+ * Body: { messages: [{ role, content }], zoneCode }
+ *
+ * Stateless: the frontend sends the full message history every turn.
+ */
+export const aiChat = asyncHandler(async (req: Request, res: Response) => {
+  const body = req.body as Record<string, unknown> | undefined;
+  if (!body || typeof body !== "object") {
+    throw new ApiError(400, "Missing JSON body");
+  }
+
+  if (!Array.isArray(body.messages)) {
+    throw new ApiError(400, "'messages' must be an array");
+  }
+
+  const zoneCode = typeof body.zoneCode === "string" ? body.zoneCode : "";
+  if (!zoneCode) throw new ApiError(400, "Missing 'zoneCode'");
+
+  const result = await runChat({
+    messages: body.messages as Parameters<typeof runChat>[0]["messages"],
+    zoneCode,
+  });
+
+  res.status(200).json(new ApiResponse(200, result, "Chat turn"));
 });
