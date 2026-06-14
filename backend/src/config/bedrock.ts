@@ -6,7 +6,14 @@ import {
 import { env } from "./env.js";
 import { ApiError } from "../utils/ApiError.js";
 
-const client = new BedrockRuntimeClient({ region: env.BEDROCK_REGION });
+// Adaptive retry + high attempt count handles Bedrock's strict TPS throttling
+// for batch jobs (e.g. embedding all products). Default is 3 attempts which is
+// not enough — Titan v2 throttles aggressively under sustained load.
+const client = new BedrockRuntimeClient({
+  region: env.BEDROCK_REGION,
+  maxAttempts: 10,
+  retryMode: "adaptive",
+});
 
 /**
  * Ask the chat model for a JSON answer.

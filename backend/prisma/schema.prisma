@@ -45,21 +45,24 @@ model Category {
 }
 
 model Product {
-  id          String   @id @default(cuid())
-  name        String
-  description String
-  brand       String
-  price       Int // selling price in whole rupees
-  mrp         Int // original price in whole rupees
-  unit        String // e.g. "500 g", "1 L", "pack of 6"
-  imageUrl    String
-  rating      Float    @default(4.0)
-  reviewCount Int      @default(0)
-  popularity  Int      @default(0) // used later for ranking
-  tags        String[] @default([])
-  vibes       String[] @default([]) // medical | party | emergency | casual — drives the vibe-reactive UI
-  categoryId  String
-  createdAt   DateTime @default(now())
+  id           String   @id @default(cuid())
+  name         String
+  description  String
+  brand        String
+  price        Int // selling price in whole rupees
+  mrp          Int // original price in whole rupees
+  unit         String // e.g. "500 g", "1 L", "pack of 6"
+  imageUrl     String
+  rating       Float    @default(4.0)
+  reviewCount  Int      @default(0)
+  popularity   Int      @default(0) // used later for ranking
+  tags         String[] @default([])
+  vibes        String[] @default([]) // medical | party | emergency | casual — drives the vibe-reactive UI
+  categoryId   String
+  embedding    Unsupported("vector(1024)")? // Titan v2 embedding, populated by `npm run embed`
+  rankScore    Float    @default(0) // composite 0..1 score, populated by `npm run rank`
+  lastRankedAt DateTime?
+  createdAt    DateTime @default(now())
 
   category   Category    @relation(fields: [categoryId], references: [id])
   stocks     ZoneStock[]

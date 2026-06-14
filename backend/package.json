@@ -10,6 +10,8 @@
     "prisma:generate": "prisma generate",
     "migrate": "prisma migrate dev",
     "seed": "tsx prisma/seed.ts",
+    "embed": "tsx src/scripts/embedProducts.ts",
+    "rank": "tsx src/scripts/rankProducts.ts",
     "studio": "prisma studio"
   },
   "dependencies": {
