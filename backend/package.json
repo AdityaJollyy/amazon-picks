@@ -12,6 +12,7 @@
     "seed": "tsx prisma/seed.ts",
     "embed": "tsx src/scripts/embedProducts.ts",
     "rank": "tsx src/scripts/rankProducts.ts",
+    "db:reset": "prisma migrate reset --force && npm run seed && node -e \"console.log('\\n✅ DB reset + seeded. Now run: npm run embed && npm run rank')\"",
     "studio": "prisma studio"
   },
   "dependencies": {
