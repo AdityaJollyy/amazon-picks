@@ -1,200 +1,237 @@
 /**
- * Two-stage prompts for the AI cart builder.
+ * Two LLM calls, but each one informed by the right context.
  *
- *   Stage 1 — PLAN:  read the customer's intent and produce a shopping plan
- *                    (vibe + a list of needs with FINAL quantities).
- *   Stage 2 — PICK:  given the plan and the actual candidates retrieved for
- *                    each need, choose the best product per line (or skip).
+ *   Stage 1 — EXPAND:  read intent + the list of categories that actually exist
+ *                      in the catalog, emit a vibe + 5-10 GENERIC search phrases.
+ *                      No quantities decided here — quantity needs the unit/pack
+ *                      info, which we don't have yet.
  *
- * The model is in charge of judgement at both stages. The deterministic
- * pipeline only handles retrieval, validation, and stock clamps.
+ *   Stage 2 — CURATE:  given the merged pool of real products (each with
+ *                      name/brand/unit/price/rating/stock visible), pick 5-10
+ *                      items WITH SANE QUANTITIES. The model can finally see
+ *                      that "Tissue Box · 200 pulls" doesn't need qty 10 for a
+ *                      party of 10.
  */
 
 export const VIBE_CATEGORIES = ["medical", "party", "emergency", "casual"] as const;
 export type VibeCategory = (typeof VIBE_CATEGORIES)[number];
 
-export type Priority = "must" | "nice";
-
-export interface PlannedNeed {
-  query: string;
-  quantity: number;
-  priority: Priority;
-  note?: string;
-}
-
-export interface ShoppingPlan {
+export interface ExpandedIntent {
   vibe_category: VibeCategory;
   intent_summary: string;
-  needs: PlannedNeed[];
+  search_phrases: string[];
 }
 
-export interface PickedItem {
-  query: string;
+export interface CuratedPick {
   product_id: string;
   quantity: number;
   why: string;
 }
 
-export interface SkippedItem {
-  query: string;
+export interface CuratedDrop {
+  label: string;
   reason: string;
 }
 
-export interface PickResult {
-  picks: PickedItem[];
-  skipped: SkippedItem[];
+export interface CurateResult {
+  items: CuratedPick[];
+  dropped: CuratedDrop[];
 }
 
-/* ─────────────────────────────  STAGE 1 — PLAN  ───────────────────────────── */
+/* ───────────────────────────────  STAGE 1  ─────────────────────────────── */
 
-export const PLAN_SYSTEM_PROMPT = `You are the planning brain for a quick-commerce app in Delhi (groceries + pharmacy + party + everyday). A customer types one short sentence describing what they need; you turn it into a tight shopping plan that another step will resolve to real products.
+export const EXPAND_SYSTEM_PROMPT = `You are the planning brain for a quick-commerce app in Delhi (groceries + pharmacy + party + everyday). A customer types one short sentence; you turn it into search phrases another step will run against the real catalog.
 
 Output ONLY a single valid JSON object — no prose, no markdown, no code fences. Schema:
 
 {
   "vibe_category": "medical" | "party" | "emergency" | "casual",
   "intent_summary": "<one short sentence — what you understood>",
-  "needs": [
-    {
-      "query": "<2-4 word generic search phrase, e.g. 'paracetamol tablets', 'cola 2 litre', 'birthday candles'>",
-      "quantity": <positive integer — TOTAL units to deliver for the whole group>,
-      "priority": "must" | "nice",
-      "note": "<optional, very short — why this is on the list, or 'shared'/'per person'>"
-    }
-  ]
+  "search_phrases": [ "<2-3 word generic search phrase>", ... ]
 }
 
-How to think:
+VIBE — pick exactly one
+- "medical": fever, headache, cough, period, cramp, injury, ORS, first aid, sick child
+- "emergency": ran out of an essential, late-night forgot-an-item run, urgent need
+- "party": birthday, friends over, celebration, get-together, drinks/snacks night
+- "casual": everyday groceries, breakfast, dinner, snacks, chai-time
 
-VIBE
-- "medical": fever, headache, cough, period, injury, ORS, first aid → restrict the plan to actual medical needs + at most ONE soft drink/water if useful
-- "emergency": ran out of something critical, late-night forgot-an-item run → 2-5 tightly-scoped items
-- "party": birthday, friends over, celebration → cake/candles/snacks/drinks; remember candles & cake are SHARED
-- "casual": everyday groceries, breakfast, dinner ingredients, movie night → match exactly what was asked
-
-NEEDS — most important rules
-- Output ONLY what the customer actually needs. If they ask for one thing, return one need. Do NOT pad to a minimum.
-- Typical lengths: medical 2-5, emergency 2-5, party 5-8, casual 3-7. Never exceed 8.
-- Each need must be a DISTINCT product type. Do not emit synonyms or near-duplicates ("snacks" + "chips" + "munchies" → just one). The downstream step picks ONE product per line.
-- "quantity" is the TOTAL number of units for the whole group, already accounting for group size and whether the item is shared or per-person:
-    • Shared (cake, candles pack, balloons pack, detergent bottle, ice cream tub): quantity = 1 (or 2 if the group is very large).
-    • Per-person consumable (soft drink can, paracetamol strip, tissues pack, plate, popcorn pouch): quantity ≈ ceil(group_size / units_per_pack).
-    • Per-illness dose (paracetamol, ORS): quantity 1-2 regardless of group size unless multiple people are sick.
-- Realistic ceilings: never request more than 12 units of any one line. If a group genuinely needs more, prefer a larger pack size in the query ("cola 2 litre" instead of qty 12).
-- "priority": "must" for things directly answering the intent; "nice" for sensible add-ons. Mark only 0-2 items as "nice" and only when they truly fit.
-- "query" must match the language of a small Indian grocery app. Use generic categories, not brands ("milk" not "Amul Gold"; "chips" not "Lay's"). Add a size hint when it matters ("cola 2 litre", "ors sachets", "biryani rice 1 kg").
+SEARCH PHRASES — most important rules
+- 5 to 10 phrases. Aim low for narrow intents (medical 3-5, emergency 3-5), higher for parties (6-9).
+- Each phrase is a GENERIC 1-3 word category, NOT a brand and NOT a quantity.
+    GOOD: "soft drink", "chips", "chocolate cake", "paracetamol", "ors", "tissues"
+    BAD : "Coca-Cola 2L", "Lay's chips", "Crocin tablet"
+- Phrases must look like things a Delhi grocery app would carry. Only pick from the AVAILABLE CATEGORIES listed in the user message — if a need doesn't fit any category, drop it. Do NOT invent categories like "balloons" or "candles" if the catalog doesn't have a "decorations" / "home needs" type aisle.
+- Phrases must be DIFFERENT PRODUCT TYPES — not category synonyms or variants of the same thing.
+    GOOD pair: "milk", "bread"      (different products)
+    BAD pair : "milk", "full cream milk"   (same product, different sub-type)
+    BAD trio : "chips", "snacks", "munchies"   (synonyms — pick one)
+    BAD pair : "headache medicine", "fever medicine"   (one paracetamol covers both — use just "paracetamol")
+- For medical: prefer ONE phrase that covers the symptom ("paracetamol" covers fever + headache + bodyache; "ors" covers loose motions). Add separate phrases only for unrelated symptoms (cough syrup vs paracetamol).
+- Order phrases by importance — the most central need first.
+- Quantities, pack sizes, and per-person math are NOT your job. The next step decides those after seeing real products.
 
 Output JSON only.`;
 
-export const buildPlanUserPrompt = (input: {
+export const buildExpandUserPrompt = (input: {
   intent: string;
   groupSize: number;
   zoneLabel: string;
   nowLabel: string;
+  availableCategories: string[];
 }): string =>
   `Customer intent: ${input.intent.trim()}
 Group size: ${input.groupSize} ${input.groupSize === 1 ? "person" : "people"}
 Delivery zone: ${input.zoneLabel}
 Time: ${input.nowLabel}
 
-Return the plan JSON now.`;
+Available categories in this catalog (pick phrases that map to these):
+${input.availableCategories.map((c) => `- ${c}`).join("\n")}
 
-/* ─────────────────────────────  STAGE 2 — PICK  ───────────────────────────── */
+Return the JSON now.`;
 
-export const PICK_SYSTEM_PROMPT = `You are the buyer brain for a quick-commerce app. You receive (a) a customer's shopping plan and (b) for each line, a small list of real, in-stock candidate products. Your job is to pick ONE product per line — the one a careful shopper would actually buy. Substitute generously; skip only as a last resort.
+/* ───────────────────────────────  STAGE 2  ─────────────────────────────── */
+
+export const CURATE_SYSTEM_PROMPT = `You are the buyer brain for a quick-commerce app. You receive a customer's intent, the group size, and a POOL of real, in-stock products in their zone — each with name, brand, unit/pack-size, price, rating, review count, and stock. Pick 5-10 products that together form the smartest cart for what the customer asked, with REALISTIC quantities.
 
 Output ONLY a single valid JSON object — no prose, no markdown, no code fences. Schema:
 
 {
-  "picks": [
+  "items": [
     {
-      "query": "<the original need.query, verbatim>",
-      "product_id": "<id from the candidates list for that line — must be one of the provided ids>",
-      "quantity": <positive integer, ≤ planned quantity, ≤ candidate.stock>,
-      "why": "<one short clause: why this product, e.g. 'top-rated, ₹40 cheaper', 'closest cola — Pepsi 2 L', 'family pack saves a trip'>"
+      "product_id": "<id from the pool — must be present>",
+      "quantity": <positive integer, ≤ 12, ≤ stock>,
+      "why": "<one short clause — why this product, e.g. '1 family-pack feeds 8', 'closest to cola — Pepsi 2 L', 'top-rated, pack of 200 covers the night'>"
     }
   ],
-  "skipped": [
-    { "query": "<need.query>", "reason": "<one short clause, e.g. 'no soft drinks at all in candidates'>" }
+  "dropped": [
+    { "label": "<what was missing in plain English, e.g. 'birthday candles', 'paracetamol'>", "reason": "<one short clause>" }
   ]
 }
 
-How to choose for each line
-- Read the candidate names + brands FIRST. Pick by ACTUAL product fit, not by score.
-- The query is usually a GENERIC category ("cola", "chips", "paracetamol") — substitute liberally:
-    • "cola" → any cola brand (Coca-Cola, Pepsi, Thums Up). If none, any soft drink (Sprite, 7Up, Mirinda).
-    • "chips" → Lay's, Bingo, Kurkure, any potato/corn snack.
-    • "paracetamol" → any paracetamol-containing tablet (Crocin, Calpol, Dolo).
-    • "cake" → any ready-to-eat cake or pastry; if none, a brownie or muffin pack.
-    • "ice cream" → any tub or family pack; flavour doesn't matter unless asked.
-  Mention the substitution in "why" so the customer knows ("closest cola — Thums Up").
-- Only skip a line if the candidate list contains NOTHING in the same product family at all. Skipping is the last resort, not the safe default. A loosely-related product is better than nothing.
-- If the customer's request is BRAND-SPECIFIC (e.g. need.query mentions a specific brand like "Coca-Cola" verbatim), prefer that brand; if unavailable, still substitute with the closest equivalent unless the brand was clearly required.
-- Among genuinely-fitting candidates: prefer higher rating + reasonable review count, then better price-per-need. Use rankScore as a tiebreaker only.
-- Prefer larger pack sizes when the planned quantity is high (e.g. for qty 6, prefer one 6-pack over six singles when both exist).
-- Never invent or alter product_id. Use the exact id from the candidates array for that line.
-- Never increase quantity beyond what the plan said or beyond candidate.stock. You MAY decrease quantity (e.g. plan said 6 but a 6-pack candidate exists, then quantity = 1).
-- "why" must be one short clause grounded in the candidate fields you can see. Do not fabricate facts.
+QUANTITY — read the UNIT before you write a number. This is the rule that matters.
 
-Cross-line rules
-- Do NOT pick the same product_id for two different lines. If two plan lines map to the same SKU, keep one and skip the other (with reason "already covered by <other line>").
-- Every plan need must appear EXACTLY ONCE — either in "picks" or in "skipped". The two arrays are disjoint and together cover every need.
+Shared items — quantity is almost always 1 (rarely 2 for very large groups):
+- Cake / pastry box / brownie pack / ice-cream tub  → 1 (cuts for the whole group)
+- Detergent / shampoo / handwash / floor cleaner    → 1
+- Tissue box / facial tissue / paper napkins        → 1 (boxes hold 100-200 pulls)
+- Candle pack / balloon pack / decoration kit       → 1 (packs already hold 10-50)
+- Aluminium foil / cling film / disposable cutlery  → 1
+- Family-pack snack / party-pack chips / 2-litre cola → 1 (one big pack > many small)
+
+Per-person consumables — divide group_size by what one pack/bottle serves, ROUND UP:
+- Soft-drink CAN (300 ml) ≈ 1 per person     → qty ≈ ceil(group_size / 1)
+- Soft-drink BOTTLE (750 ml) ≈ serves 2-3   → qty ≈ ceil(group_size / 2.5)
+- Soft-drink BOTTLE (1.25 L / 2 L) ≈ serves 5-6 → qty ≈ 1, max 2 for big groups
+- Small chips packet (40-60 g) ≈ 1 per 2 people → qty ≈ ceil(group_size / 2)
+- Family-pack chips (>100 g)                  → qty 1
+- Eggs (pack of 6) for breakfast              → qty ≈ ceil(group_size / 3)
+- Milk pouch (500 ml) for chai/breakfast      → qty ≈ ceil(group_size / 4), max 2
+
+Medical — quantity is about the DOSE, not the group:
+- Paracetamol / Crocin / Dolo / Calpol strip  → qty 1 (one strip is plenty for a fever)
+- ORS sachet / liquid bottle                  → qty 1-2 (per sick person; cap at 2)
+- Cough syrup / balm / spray / plaster        → qty 1
+Even if 5 people are at home, a fever cart is still 1 strip + 1 ORS, not 5.
+
+Hard ceilings — never violate:
+- quantity ≤ 12 on any line, ever
+- quantity ≤ stock on that product
+- If you find yourself writing qty 8+ for a non-drink item, stop and pick a bigger pack from the pool instead
+
+PRODUCT CHOICE
+- Read NAMES first. Pick the product that genuinely fits the customer's intent — not the one with the highest similarity number.
+- Substitute liberally: "cola" → any cola brand; if no cola, any soft drink. "chips" → Lay's, Bingo, Kurkure, any savoury snack. "paracetamol" → any paracetamol-containing tablet (Crocin, Dolo, Calpol, Saridon). "cake" → any ready-to-eat cake or brownie pack.
+- Among genuinely-fitting products, prefer higher rating + reasonable review count, then better price. Lean toward larger pack sizes if you'd otherwise pick the same item 4+ times.
+- Never pick the same product_id twice. If two needs map to the same SKU, keep one and add the second to "dropped".
+- Never invent a product_id. Use exact ids from the pool.
+
+ONE PRODUCT PER NEED-TYPE — but cover every need-type the customer mentioned.
+
+What "need-type" means:
+- ONE bread (any kind — wheat / white / brown all count as "bread")
+- ONE milk (any kind — full cream / toned / standardised all count as "milk")
+- ONE pain reliever (Dolo, Saridon, Crocin all count as "pain reliever")
+- ONE cake (any sponge / pastry / brownie / muffin counts as "cake")
+- ONE cola or ONE soft drink — pick one bottle SKU even if multiple are in the pool
+- ONE chips brand (Lay's, Bingo, Kurkure, Bingo all count as "chips" — pick one)
+- ONE tissue / ONE napkin / ONE ORS / ONE balm
+
+Cover ALL the need-types the customer asked for:
+- "cake and snacks for a birthday" → 1 cake + 1 chips + 1 biscuit/sweet (3-5 lines, NOT 1 line)
+- "milk, bread and eggs" → 1 milk + 1 bread + 1 eggs (exactly 3 lines)
+- "snacks and drinks" → 1 chips + 1 biscuit + 1 cola/drink (3-4 lines)
+- "fever and headache medicine" → 1 paracetamol-family tablet (1 line is correct — paracetamol covers both)
+
+Algorithm before you write the JSON:
+1. List every distinct PRODUCT TYPE the customer asked for or implied.
+2. For each type, scan the pool for the BEST single product (rating + price + pack size).
+3. If a type has no genuine match in the pool, add it to "dropped" — do NOT substitute with an unrelated type.
+4. Output exactly one item per covered type. Do not duplicate.
+
+Examples of WRONG behaviour you must avoid:
+- 3 brands of milk in the same cart (one customer, one fridge — pick the best one)
+- 2 different breads in the same cart (whole wheat + white = still 2 breads, pick one)
+- "fever cart" containing Saridon + Volini spray + Zandu balm + nasal spray (one tablet is enough)
+- "cake and snacks" cart with only the cake — must include at least one snack too
+- "milk, bread and eggs" cart missing eggs — three need-types, three lines
+- Picking a joint supplement when the customer asked for paracetamol
+- Sneaking milk or popcorn into a "movie night snacks and drinks" cart when they weren't asked for
+
+When the customer's intent has multiple "and"-joined needs ("cake AND snacks", "milk AND bread AND eggs"), every named need MUST be represented unless honestly missing — in which case it goes in "dropped". Never silently drop one.
+
+DON'T REACH FOR UNRELATED FALLBACKS
+- If the customer asked for paracetamol/painkiller and there is no paracetamol-family tablet in the pool (Crocin, Dolo, Calpol, Saridon, Combiflam), DROP the line. Do NOT add a joint supplement, calcium tablet, or vitamin to "cover" the gap — that's worse than nothing.
+- Same logic for any specific need: if cake isn't in the pool, drop it (don't substitute biscuits). If candles aren't there, drop them (don't substitute a balloon kit). The customer can read "couldn't find candles" — that's fine. Lying with an unrelated product is not.
+- Substitution is fine for FAMILY-level swaps (cola → any soft drink, Lay's → any chips). It is NOT fine for category-jumping (paracetamol → joint supplement, cake → biscuit).
+
+COVER WHAT WAS ASKED — don't drop and don't pad
+- Every distinct PRODUCT TYPE the customer explicitly named must appear in "items" (or in "dropped" with a real reason). "Milk, bread and eggs" → 3 lines. "Cake and snacks" → at least 1 cake AND at least 1 snack.
+- The reverse is just as important: do NOT add types the customer did NOT ask for. "I have fever and headache" → ONE pain reliever, do not add a vaporub, nasal spray, or balm "for completeness". The customer can ask for those if they want them.
+- A complete medical cart is often 1-3 lines. A complete restock cart matches the items named, no more.
+
+Cart shape
+- Total items: 4-10 lines. Medical/emergency: 2-5 lines. Party: 6-10 lines. Casual: 4-7 lines. Match how much the customer actually asked for.
+- "why" is one short clause grounded in the candidate fields. Mention the substitution if you made one ("closest cola — Thums Up").
 
 Output JSON only.`;
 
-export const buildPickUserPrompt = (input: {
-  plan: ShoppingPlan;
+export interface CurateCandidateRow {
+  id: string;
+  name: string;
+  brand: string;
+  unit: string;
+  price: number;
+  mrp: number;
+  rating: number;
+  reviewCount: number;
+  stock: number;
+  categoryName: string;
+}
+
+export const buildCurateUserPrompt = (input: {
   intent: string;
   groupSize: number;
-  candidatesPerNeed: Array<{
-    query: string;
-    candidates: Array<{
-      id: string;
-      name: string;
-      brand: string;
-      unit: string;
-      price: number;
-      mrp: number;
-      rating: number;
-      reviewCount: number;
-      stock: number;
-      similarity: number;
-      rankScore: number;
-    }>;
-  }>;
+  vibe: VibeCategory;
+  intentSummary: string;
+  zoneLabel: string;
+  pool: CurateCandidateRow[];
 }): string => {
-  const candidatesBlock = input.candidatesPerNeed
-    .map((line) => {
-      if (line.candidates.length === 0) {
-        return `Need: "${line.query}" — NO CANDIDATES (skip this line).`;
-      }
-      const rows = line.candidates
-        .map(
-          (c, i) =>
-            `  ${i + 1}. id=${c.id}  "${c.name}" — ${c.brand} · ${c.unit} · ₹${c.price} (mrp ₹${c.mrp}) · rating ${c.rating.toFixed(1)} (${c.reviewCount} reviews) · stock ${c.stock} · sim ${c.similarity.toFixed(2)} · rank ${c.rankScore.toFixed(2)}`
-        )
-        .join("\n");
-      return `Need: "${line.query}"\n${rows}`;
-    })
-    .join("\n\n");
-
-  const planBlock = input.plan.needs
+  const poolBlock = input.pool
     .map(
-      (n) =>
-        `  - "${n.query}" · qty ${n.quantity} · ${n.priority}${n.note ? ` · ${n.note}` : ""}`
+      (c, i) =>
+        `  ${i + 1}. id=${c.id}  "${c.name}" — ${c.brand} · ${c.unit} · ₹${c.price} (mrp ₹${c.mrp}) · ${c.rating.toFixed(1)}★ (${c.reviewCount}) · stock ${c.stock} · ${c.categoryName}`
     )
     .join("\n");
 
   return `Customer intent: ${input.intent.trim()}
-Group size: ${input.groupSize}
-Vibe: ${input.plan.vibe_category}
-Plan summary: ${input.plan.intent_summary}
+Group size: ${input.groupSize} ${input.groupSize === 1 ? "person" : "people"}
+Vibe: ${input.vibe}
+Plan summary: ${input.intentSummary}
+Delivery zone: ${input.zoneLabel}
 
-Plan needs:
-${planBlock}
+Pool of in-stock products (pick from these only):
+${poolBlock}
 
-Candidates per need:
-${candidatesBlock}
-
-Pick the best product per line, or skip. Return the JSON now.`;
+Pick 5-10 with realistic quantities. Output JSON only.`;
 };

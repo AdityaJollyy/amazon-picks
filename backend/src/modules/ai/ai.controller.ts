@@ -4,12 +4,7 @@ import { ApiResponse } from "../../utils/ApiResponse.js";
 import { ApiError } from "../../utils/ApiError.js";
 import { generateJSON, embed } from "../../config/bedrock.js";
 import { retrieveCandidates } from "../../features/ai/retrieve.service.js";
-import {
-  planCart,
-  buildCart,
-  quickCartOneShot,
-  validateClientPlan,
-} from "../../features/ai/quickCart.service.js";
+import { buildQuickCart } from "../../features/ai/quickCart.service.js";
 import { runChat } from "../../features/ai/chat.service.js";
 import { prisma } from "../../config/prisma.js";
 
@@ -97,67 +92,10 @@ const parseZoneCodeField = (body: Record<string, unknown>): string => {
 };
 
 /**
- * POST /api/v1/ai/quick-cart/plan
- * Body: { intent, groupSize, zoneCode }
- *
- * Step 1 of the Quick Mode flow. The AI reads the customer's intent and
- * returns a plan (vibe + needs list) WITHOUT touching the catalog yet. The
- * frontend shows this plan to the user, who can drop items they don't want
- * before sending it back to /build.
- */
-export const aiQuickCartPlan = asyncHandler(
-  async (req: Request, res: Response) => {
-    const body = req.body as Record<string, unknown> | undefined;
-    if (!body || typeof body !== "object") {
-      throw new ApiError(400, "Missing JSON body");
-    }
-
-    const intent = parseIntentField(body);
-    const groupSize = parseGroupSizeField(body);
-    const zoneCode = parseZoneCodeField(body);
-    const zone = await requireZone(zoneCode);
-    const zoneLabel = `${zone.name}, ${zone.city} ${zone.pincode}`;
-
-    const result = await planCart({ intent, groupSize, zoneCode, zoneLabel });
-    res.status(200).json(new ApiResponse(200, result, "Plan generated"));
-  }
-);
-
-/**
- * POST /api/v1/ai/quick-cart/build
- * Body: { intent, groupSize, zoneCode, plan }
- *
- * Step 2 of the Quick Mode flow. Given a plan (possibly edited by the user),
- * runs hybrid retrieval per need + asks the AI to pick the best in-stock SKU
- * per line. Returns one curated cart plus any dropped lines.
- */
-export const aiQuickCartBuild = asyncHandler(
-  async (req: Request, res: Response) => {
-    const body = req.body as Record<string, unknown> | undefined;
-    if (!body || typeof body !== "object") {
-      throw new ApiError(400, "Missing JSON body");
-    }
-
-    const intent = parseIntentField(body);
-    const groupSize = parseGroupSizeField(body);
-    const zoneCode = parseZoneCodeField(body);
-    await requireZone(zoneCode);
-
-    const plan = validateClientPlan(body.plan);
-
-    const result = await buildCart({ intent, groupSize, zoneCode, plan });
-    res.status(200).json(new ApiResponse(200, result, "Cart built"));
-  }
-);
-
-/**
  * POST /api/v1/ai/quick-cart
  * Body: { intent, groupSize, zoneCode }
  *
- * One-shot Quick Mode: plan + retrieve + pick in a single call. Returns the
- * built cart directly so the user lands on an editable result without seeing
- * an intermediate plan screen. Use /quick-cart/plan + /quick-cart/build only
- * when the UI needs the two-step flow (legacy / chat surfaces).
+ * Quick Mode: expand → retrieve → curate. Returns one editable cart.
  */
 export const aiQuickCart = asyncHandler(
   async (req: Request, res: Response) => {
@@ -172,7 +110,7 @@ export const aiQuickCart = asyncHandler(
     const zone = await requireZone(zoneCode);
     const zoneLabel = `${zone.name}, ${zone.city} ${zone.pincode}`;
 
-    const result = await quickCartOneShot({
+    const result = await buildQuickCart({
       intent,
       groupSize,
       zoneCode,

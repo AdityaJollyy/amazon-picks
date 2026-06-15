@@ -1,56 +1,48 @@
 import { generateJSON } from "../../config/bedrock.js";
 import { ApiError } from "../../utils/ApiError.js";
+import { prisma } from "../../config/prisma.js";
 import {
   retrieveCandidates,
   type RetrievedCandidate,
 } from "./retrieve.service.js";
 import {
-  PLAN_SYSTEM_PROMPT,
-  PICK_SYSTEM_PROMPT,
-  buildPlanUserPrompt,
-  buildPickUserPrompt,
+  EXPAND_SYSTEM_PROMPT,
+  CURATE_SYSTEM_PROMPT,
+  buildExpandUserPrompt,
+  buildCurateUserPrompt,
   VIBE_CATEGORIES,
-  type ShoppingPlan,
-  type PlannedNeed,
-  type PickResult,
-  type PickedItem,
-  type SkippedItem,
+  type ExpandedIntent,
+  type CurateResult,
+  type CuratedPick,
+  type CuratedDrop,
   type VibeCategory,
 } from "./quickCart.prompt.js";
 
 /**
- * Two-step AI cart builder, split so the user can SEE and EDIT the plan
- * before the catalog search runs.
+ * Quick Mode pipeline:
  *
- *   planCart()  — Claude reads the customer's intent + context and emits a
- *                 shopping plan: vibe label, intent summary, and a list of
- *                 needs with FINAL quantities (no per-person multiplication
- *                 downstream). No retrieval or product selection happens here.
+ *   1. EXPAND  (LLM)  — intent + available categories → vibe + 5-10 phrases
+ *   2. RETRIEVE (SQL) — parallel hybrid search per phrase, dedupe to a pool
+ *   3. CURATE   (LLM) — pool + intent → 5-10 items with sane quantities
  *
- *   buildCart() — Given a plan (possibly edited by the user — items removed,
- *                 etc.), runs hybrid retrieval per need with a similarity
- *                 floor, then asks Claude to pick the best in-stock SKU per
- *                 line (or skip with a reason). Returns one curated cart plus
- *                 any dropped lines.
+ * The curator decides quantities AFTER seeing real units/pack sizes, so a
+ * "tissue box (200 pulls)" no longer gets ordered 10 times for a party of 10.
  */
 
-const RETRIEVAL_LIMIT = 8;
-const MAX_NEEDS = 8;
+const RETRIEVAL_PER_PHRASE = 6;
+const POOL_CAP = 30;
+const MIN_PHRASES = 1;
+const MAX_PHRASES = 10;
+const MIN_ITEMS = 1;
+const MAX_ITEMS = 10;
 const MAX_QTY_PER_LINE = 12;
 const MAX_INTENT_LEN = 500;
 
-export interface PlanInput {
+export interface QuickCartInput {
   intent: string;
   groupSize: number;
   zoneCode: string;
   zoneLabel?: string;
-}
-
-export interface BuildInput {
-  intent: string;
-  groupSize: number;
-  zoneCode: string;
-  plan: ShoppingPlan;
 }
 
 export interface QuickCartItem {
@@ -72,10 +64,6 @@ export interface QuickCart {
   itemCount: number;
 }
 
-export interface PlanResult {
-  plan: ShoppingPlan;
-}
-
 export interface BuildResult {
   vibe_category: VibeCategory;
   intent_summary: string;
@@ -88,38 +76,9 @@ export interface BuildResult {
 const isVibe = (v: unknown): v is VibeCategory =>
   typeof v === "string" && (VIBE_CATEGORIES as readonly string[]).includes(v);
 
-const isPriority = (v: unknown): v is "must" | "nice" =>
-  v === "must" || v === "nice";
-
-/** Normalize raw needs (from the AI OR from a user-edited request body). */
-const normalizeNeeds = (raw: unknown): PlannedNeed[] => {
-  if (!Array.isArray(raw)) return [];
-  const seen = new Set<string>();
-  return raw.slice(0, MAX_NEEDS).flatMap((item): PlannedNeed[] => {
-    if (!item || typeof item !== "object") return [];
-    const i = item as Record<string, unknown>;
-    const query = typeof i.query === "string" ? i.query.trim() : "";
-    const qty = Number(i.quantity);
-    if (!query || !Number.isFinite(qty) || qty <= 0) return [];
-    const key = query.toLowerCase();
-    if (seen.has(key)) return [];
-    seen.add(key);
-    const priority = isPriority(i.priority) ? i.priority : "must";
-    const note = typeof i.note === "string" ? i.note.trim() : undefined;
-    return [
-      {
-        query,
-        quantity: Math.max(1, Math.min(MAX_QTY_PER_LINE, Math.round(qty))),
-        priority,
-        ...(note ? { note } : {}),
-      },
-    ];
-  });
-};
-
-const validateAiPlan = (raw: unknown): ShoppingPlan => {
+const validateExpand = (raw: unknown): ExpandedIntent => {
   if (!raw || typeof raw !== "object") {
-    throw new ApiError(502, "AI plan was not an object");
+    throw new ApiError(502, "AI expand returned non-object");
   }
   const r = raw as Record<string, unknown>;
 
@@ -133,56 +92,41 @@ const validateAiPlan = (raw: unknown): ShoppingPlan => {
   const intent_summary =
     typeof r.intent_summary === "string" ? r.intent_summary.trim() : "";
 
-  const needs = normalizeNeeds(r.needs);
-  if (needs.length === 0) {
-    throw new ApiError(502, "AI plan had no usable needs");
+  const phrasesRaw = Array.isArray(r.search_phrases) ? r.search_phrases : [];
+  const seen = new Set<string>();
+  const search_phrases: string[] = [];
+  for (const p of phrasesRaw) {
+    if (typeof p !== "string") continue;
+    const phrase = p.trim().toLowerCase();
+    if (!phrase || phrase.length < 2) continue;
+    if (seen.has(phrase)) continue;
+    seen.add(phrase);
+    search_phrases.push(phrase);
+    if (search_phrases.length >= MAX_PHRASES) break;
+  }
+  if (search_phrases.length < MIN_PHRASES) {
+    throw new ApiError(502, "AI expand returned no usable search phrases");
   }
 
-  return { vibe_category: r.vibe_category, intent_summary, needs };
+  return { vibe_category: r.vibe_category, intent_summary, search_phrases };
 };
 
-/** Validate a plan as it arrives from the client (it may have been edited). */
-export const validateClientPlan = (raw: unknown): ShoppingPlan => {
+const validateCurate = (raw: unknown): CurateResult => {
   if (!raw || typeof raw !== "object") {
-    throw new ApiError(400, "Missing or invalid 'plan'");
+    throw new ApiError(502, "AI curate returned non-object");
   }
   const r = raw as Record<string, unknown>;
 
-  if (!isVibe(r.vibe_category)) {
-    throw new ApiError(400, "plan.vibe_category is missing or invalid");
-  }
-
-  const intent_summary =
-    typeof r.intent_summary === "string" ? r.intent_summary.trim() : "";
-
-  const needs = normalizeNeeds(r.needs);
-  if (needs.length === 0) {
-    throw new ApiError(400, "plan.needs must contain at least one item");
-  }
-
-  return { vibe_category: r.vibe_category, intent_summary, needs };
-};
-
-const validatePickResult = (raw: unknown): PickResult => {
-  if (!raw || typeof raw !== "object") {
-    throw new ApiError(502, "AI pick result was not an object");
-  }
-  const r = raw as Record<string, unknown>;
-
-  const picksRaw = Array.isArray(r.picks) ? r.picks : [];
-  const skippedRaw = Array.isArray(r.skipped) ? r.skipped : [];
-
-  const picks: PickedItem[] = picksRaw.flatMap((p): PickedItem[] => {
-    if (!p || typeof p !== "object") return [];
-    const o = p as Record<string, unknown>;
-    const query = typeof o.query === "string" ? o.query.trim() : "";
+  const itemsRaw = Array.isArray(r.items) ? r.items : [];
+  const items: CuratedPick[] = itemsRaw.flatMap((it): CuratedPick[] => {
+    if (!it || typeof it !== "object") return [];
+    const o = it as Record<string, unknown>;
     const product_id = typeof o.product_id === "string" ? o.product_id : "";
     const qty = Number(o.quantity);
     const why = typeof o.why === "string" ? o.why.trim() : "";
-    if (!query || !product_id || !Number.isFinite(qty) || qty <= 0) return [];
+    if (!product_id || !Number.isFinite(qty) || qty <= 0) return [];
     return [
       {
-        query,
         product_id,
         quantity: Math.max(1, Math.min(MAX_QTY_PER_LINE, Math.round(qty))),
         why,
@@ -190,16 +134,17 @@ const validatePickResult = (raw: unknown): PickResult => {
     ];
   });
 
-  const skipped: SkippedItem[] = skippedRaw.flatMap((s): SkippedItem[] => {
-    if (!s || typeof s !== "object") return [];
-    const o = s as Record<string, unknown>;
-    const query = typeof o.query === "string" ? o.query.trim() : "";
+  const droppedRaw = Array.isArray(r.dropped) ? r.dropped : [];
+  const dropped: CuratedDrop[] = droppedRaw.flatMap((d): CuratedDrop[] => {
+    if (!d || typeof d !== "object") return [];
+    const o = d as Record<string, unknown>;
+    const label = typeof o.label === "string" ? o.label.trim() : "";
     const reason = typeof o.reason === "string" ? o.reason.trim() : "";
-    if (!query) return [];
-    return [{ query, reason: reason || "no good match" }];
+    if (!label) return [];
+    return [{ label, reason: reason || "no good match in your zone" }];
   });
 
-  return { picks, skipped };
+  return { items, dropped };
 };
 
 /* ─────────────────────────────  helpers  ───────────────────────────── */
@@ -237,76 +182,130 @@ const sanitizeIntent = (intent: string): string => {
 const clampGroupSize = (n: number): number =>
   Math.max(1, Math.min(20, Math.round(n)));
 
-/* ─────────────────────────────  step 1: PLAN  ───────────────────────────── */
+/**
+ * Pick the product-type words from a name. Two products that share at least
+ * one of these are treated as duplicates of the same need ("Amul Gold Milk"
+ * vs "Heritage Toned Milk" → both have "milk", so we keep one). Only
+ * GENERIC type words live here — brand names (Kurkure, Pepsi, Coke, ORSL)
+ * are deliberately excluded so e.g. "Kurkure ... Chips" still trips on
+ * "chips" against an existing Lay's pick.
+ */
+const TYPE_KEYWORDS = [
+  "milk", "bread", "egg", "eggs", "butter", "cheese", "yogurt", "curd", "paneer",
+  "rice", "atta", "dal", "oil", "ghee",
+  "chips", "namkeen", "popcorn", "biscuit", "biscuits", "cookie", "cookies",
+  "chocolate", "cake", "rasgulla", "barfi", "halwa", "muffin", "pastry",
+  "cola", "soda", "juice", "tea", "coffee", "lassi", "water",
+  "paracetamol", "balm", "spray", "syrup", "ors", "tablet", "tablets",
+  "tissue", "tissues", "napkin", "napkins", "foil", "wrap",
+  "shampoo", "conditioner", "soap", "bodywash", "handwash", "toothpaste",
+  "detergent", "cleaner",
+  "candle", "candles", "balloon", "balloons",
+  "noodles", "pasta", "sauce", "ketchup", "jam", "honey", "spread",
+  "banana", "apple", "tomato", "onion", "potato", "spinach", "coriander",
+];
+const TYPE_KEYWORD_SET = new Set(TYPE_KEYWORDS);
 
-export const planCart = async (input: PlanInput): Promise<PlanResult> => {
+const extractTypeKeywords = (name: string): string[] => {
+  const lower = name.toLowerCase();
+  const tokens = lower
+    .replace(/[^a-z0-9\s]+/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+  const hits = new Set<string>();
+  for (const t of tokens) {
+    if (TYPE_KEYWORD_SET.has(t)) hits.add(t);
+  }
+  // Substring fallbacks for product TYPES that brand names often hide
+  // ("ORSL" is an ORS, "Prolyte" → ORS via the (ORS) suffix already covered).
+  if (/\b(ors|orsl|prolyte|electral|enerzal)\b/.test(lower)) hits.add("ors");
+  if (/\b(crocin|dolo|saridon|calpol|combiflam|paracetamol|panadol)\b/.test(lower))
+    hits.add("paracetamol");
+  return [...hits];
+};
+
+/**
+ * Cache the catalog category list — it changes rarely (only on a reseed) so
+ * a one-shot fetch + in-memory cache is fine. Reset on process restart.
+ */
+let cachedCategoryNames: string[] | null = null;
+const fetchCategoryNames = async (): Promise<string[]> => {
+  if (cachedCategoryNames) return cachedCategoryNames;
+  const rows = await prisma.category.findMany({
+    select: { name: true },
+    orderBy: { name: "asc" },
+  });
+  cachedCategoryNames = rows.map((r) => r.name);
+  return cachedCategoryNames;
+};
+
+/* ─────────────────────────────  pipeline  ───────────────────────────── */
+
+export const buildQuickCart = async (
+  input: QuickCartInput
+): Promise<BuildResult> => {
   const intent = sanitizeIntent(input.intent);
   const groupSize = clampGroupSize(input.groupSize);
   const zoneLabel = input.zoneLabel?.trim() || input.zoneCode;
   const nowLabel = formatNow(new Date());
 
-  const plan = validateAiPlan(
+  // 1. EXPAND ───────────────────────────────────────────────────────────────
+  const availableCategories = await fetchCategoryNames();
+  const expanded = validateExpand(
     await generateJSON(
-      PLAN_SYSTEM_PROMPT,
-      buildPlanUserPrompt({ intent, groupSize, zoneLabel, nowLabel })
+      EXPAND_SYSTEM_PROMPT,
+      buildExpandUserPrompt({
+        intent,
+        groupSize,
+        zoneLabel,
+        nowLabel,
+        availableCategories,
+      })
     )
   );
 
-  return { plan };
-};
-
-/* ─────────────────────────────  step 2: BUILD  ───────────────────────────── */
-
-export const buildCart = async (input: BuildInput): Promise<BuildResult> => {
-  const intent = sanitizeIntent(input.intent);
-  const groupSize = clampGroupSize(input.groupSize);
-  const plan = input.plan;
-
-  // 1. RETRIEVE — one parallel hybrid search per need.
-  const retrievals = await Promise.all(
-    plan.needs.map(async (need) => ({
-      need,
-      candidates: await retrieveCandidates(need.query, input.zoneCode, {
-        limit: RETRIEVAL_LIMIT,
+  // 2. RETRIEVE ─────────────────────────────────────────────────────────────
+  const perPhrase = await Promise.all(
+    expanded.search_phrases.map(async (phrase) => ({
+      phrase,
+      candidates: await retrieveCandidates(phrase, input.zoneCode, {
+        limit: RETRIEVAL_PER_PHRASE,
       }),
     }))
   );
 
-  // Lookup table so we can resolve picked product_ids back to the full
-  // RetrievedCandidate. Only candidates we actually showed the model are
-  // eligible — anything outside this map is treated as a hallucinated id.
-  const candidateById = new Map<string, RetrievedCandidate>();
-  for (const r of retrievals) {
-    for (const c of r.candidates) candidateById.set(c.id, c);
+  // Dedupe: same product can show up under multiple phrases. Keep first hit
+  // (preserves the strongest match) and remember which phrase surfaced it.
+  const pool: RetrievedCandidate[] = [];
+  const seen = new Set<string>();
+  for (const r of perPhrase) {
+    for (const c of r.candidates) {
+      if (seen.has(c.id)) continue;
+      seen.add(c.id);
+      pool.push(c);
+      if (pool.length >= POOL_CAP) break;
+    }
+    if (pool.length >= POOL_CAP) break;
   }
 
-  const autoDropped: QuickCartDropped[] = retrievals
-    .filter((r) => r.candidates.length === 0)
-    .map((r) => ({
-      query: r.need.query,
-      reason: "no in-stock match in your zone",
-      priority: r.need.priority,
-    }));
-
-  const linesForPick = retrievals.filter((r) => r.candidates.length > 0);
-
-  if (linesForPick.length === 0) {
+  if (pool.length === 0) {
     throw new ApiError(
       404,
-      "Nothing on your list was in stock in your zone right now"
+      "Nothing matched in your zone — try a different request or zone"
     );
   }
 
-  // 2. PICK — model chooses one product per line (or skips with a reason).
-  const pickRaw = await generateJSON(
-    PICK_SYSTEM_PROMPT,
-    buildPickUserPrompt({
-      plan: { ...plan, needs: linesForPick.map((l) => l.need) },
-      intent,
-      groupSize,
-      candidatesPerNeed: linesForPick.map((l) => ({
-        query: l.need.query,
-        candidates: l.candidates.map((c) => ({
+  // 3. CURATE ───────────────────────────────────────────────────────────────
+  const curated = validateCurate(
+    await generateJSON(
+      CURATE_SYSTEM_PROMPT,
+      buildCurateUserPrompt({
+        intent,
+        groupSize,
+        vibe: expanded.vibe_category,
+        intentSummary: expanded.intent_summary,
+        zoneLabel,
+        pool: pool.map((c) => ({
           id: c.id,
           name: c.name,
           brand: c.brand,
@@ -316,65 +315,59 @@ export const buildCart = async (input: BuildInput): Promise<BuildResult> => {
           rating: c.rating,
           reviewCount: c.reviewCount,
           stock: c.stock,
-          similarity: c.similarity,
-          rankScore: c.rankScore,
+          categoryName: c.categoryName,
         })),
-      })),
-    })
+      })
+    )
   );
-  const picked = validatePickResult(pickRaw);
 
-  // 3. ASSEMBLE — turn picks into cart items, attach `why`, clamp to stock,
-  //    and skip duplicate product_ids the model accidentally picked twice.
+  // 4. RESOLVE picks back to full RetrievedCandidate, dedupe, clamp to stock,
+  //    and enforce a "one per product type" guard. The prompt asks for this
+  //    but the model still occasionally outputs 3 breads or 2 milks. We use
+  //    name-keyword overlap so that "milk + bread + eggs" still survives even
+  //    though they all live in "Dairy, Bread & Eggs".
+  const poolById = new Map(pool.map((c) => [c.id, c]));
   const items: QuickCartItem[] = [];
-  const usedProductIds = new Set<string>();
-  const aiSkippedByQuery = new Map<string, string>(
-    picked.skipped.map((s) => [s.query.toLowerCase(), s.reason])
-  );
-  const handledQueries = new Set<string>();
+  const usedIds = new Set<string>();
+  const usedKeywords = new Set<string>();
 
-  for (const pick of picked.picks) {
-    const product = candidateById.get(pick.product_id);
+  for (const pick of curated.items) {
+    const product = poolById.get(pick.product_id);
     if (!product) continue;
-    if (usedProductIds.has(product.id)) continue;
+    if (usedIds.has(product.id)) continue;
 
-    const need = linesForPick
-      .map((l) => l.need)
-      .find((n) => n.query.toLowerCase() === pick.query.toLowerCase());
-    if (!need) continue;
+    const keywords = extractTypeKeywords(product.name);
+    // Block only when the new product brings NO new type-keyword. So
+    // "Amul Milk" after "Heritage Milk" is blocked (both = ["milk"]), but
+    // "Tissue Napkin" after "Tissue Box" is allowed (introduces "napkin").
+    // Products with no recognised keywords always pass through.
+    if (keywords.length > 0 && keywords.every((k) => usedKeywords.has(k))) {
+      continue;
+    }
+
+    usedIds.add(product.id);
+    for (const k of keywords) usedKeywords.add(k);
 
     const quantity = Math.max(
       1,
-      Math.min(pick.quantity, need.quantity, product.stock, MAX_QTY_PER_LINE)
+      Math.min(pick.quantity, product.stock, MAX_QTY_PER_LINE)
     );
-
-    items.push({
-      product,
-      quantity,
-      why: pick.why,
-      priority: need.priority,
-    });
-    usedProductIds.add(product.id);
-    handledQueries.add(need.query.toLowerCase());
+    items.push({ product, quantity, why: pick.why, priority: "must" });
+    if (items.length >= MAX_ITEMS) break;
   }
 
-  const aiDropped: QuickCartDropped[] = linesForPick
-    .filter((l) => !handledQueries.has(l.need.query.toLowerCase()))
-    .map((l) => ({
-      query: l.need.query,
-      reason:
-        aiSkippedByQuery.get(l.need.query.toLowerCase()) ?? "no good match",
-      priority: l.need.priority,
-    }));
-
-  const dropped = [...autoDropped, ...aiDropped];
-
-  if (items.length === 0) {
+  if (items.length < MIN_ITEMS) {
     throw new ApiError(
       404,
-      "Couldn't build a cart — nothing matched well enough in your zone"
+      "Couldn't curate a cart — nothing matched well enough in your zone"
     );
   }
+
+  const dropped: QuickCartDropped[] = curated.dropped.map((d) => ({
+    query: d.label,
+    reason: d.reason,
+    priority: "must" as const,
+  }));
 
   const total = items.reduce(
     (sum, it) => sum + it.product.price * it.quantity,
@@ -383,29 +376,9 @@ export const buildCart = async (input: BuildInput): Promise<BuildResult> => {
   const itemCount = items.reduce((n, it) => n + it.quantity, 0);
 
   return {
-    vibe_category: plan.vibe_category,
-    intent_summary: plan.intent_summary,
+    vibe_category: expanded.vibe_category,
+    intent_summary: expanded.intent_summary,
     cart: { items, total, itemCount },
     dropped,
   };
-};
-
-/* ────────────────────────  one-shot: plan + build  ──────────────────────── */
-
-/**
- * Single-call entry point used by the redesigned Quick Mode UI. Internally
- * this is `planCart` followed by `buildCart` — same prompts, same retrieval,
- * same outputs — but the user never sees the intermediate plan. They edit
- * the final cart instead.
- */
-export const quickCartOneShot = async (
-  input: PlanInput
-): Promise<BuildResult> => {
-  const { plan } = await planCart(input);
-  return buildCart({
-    intent: input.intent,
-    groupSize: input.groupSize,
-    zoneCode: input.zoneCode,
-    plan,
-  });
 };

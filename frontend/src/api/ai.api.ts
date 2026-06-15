@@ -28,19 +28,6 @@ export type AiVibe = "medical" | "party" | "emergency" | "casual";
 
 export type AiPriority = "must" | "nice";
 
-export type PlannedNeed = {
-  query: string;
-  quantity: number;
-  priority: AiPriority;
-  note?: string;
-};
-
-export type ShoppingPlan = {
-  vibe_category: AiVibe;
-  intent_summary: string;
-  needs: PlannedNeed[];
-};
-
 export type AiCartItem = {
   product: RetrievedCandidate;
   quantity: number;
@@ -60,10 +47,6 @@ export type AiDropped = {
   priority: AiPriority;
 };
 
-export type PlanResult = {
-  plan: ShoppingPlan;
-};
-
 export type BuildResult = {
   vibe_category: AiVibe;
   intent_summary: string;
@@ -71,26 +54,15 @@ export type BuildResult = {
   dropped: AiDropped[];
 };
 
-export type PlanInput = {
+export type QuickCartInput = {
   intent: string;
   groupSize: number;
   zoneCode: string;
-};
-
-export type BuildInput = {
-  intent: string;
-  groupSize: number;
-  zoneCode: string;
-  plan: ShoppingPlan;
 };
 
 export const aiApi = {
-  quickCart: (input: PlanInput) =>
+  quickCart: (input: QuickCartInput) =>
     apiClient.post<BuildResult>("/ai/quick-cart", input),
-  plan: (input: PlanInput) =>
-    apiClient.post<PlanResult>("/ai/quick-cart/plan", input),
-  build: (input: BuildInput) =>
-    apiClient.post<BuildResult>("/ai/quick-cart/build", input),
   chat: (input: ChatInput) => apiClient.post<ChatResult>("/ai/chat", input),
 };
 
